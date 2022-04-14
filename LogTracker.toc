@@ -1,9 +1,11 @@
-## Interface: 20501
+## Interface: 20504
 ## Title: LogTracker
 ## Version: 1.0.0
 ## Author: Mylaerla-Everlook
 ## Notes: Track players logs ingame via tooltip/who
 ## DefaultState: enabled
+## Dependencies: LogTracker_RealmData
+## OptionalDeps: LogTracker_CharacterData_EU, LogTracker_CharacterData_US, LogTracker_CharacterData_KR, LogTracker_CharacterData_TW, LogTracker_CharacterData_CN
 
 Locale\enUS.lua
 Locale\deDE.lua
