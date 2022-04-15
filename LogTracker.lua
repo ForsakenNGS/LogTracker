@@ -153,7 +153,7 @@ end
 
 function LogTracker:SendPlayerInfoToChat(playerData, playerName, playerRealm)
   for _, zone in ipairs(playerData.performance) do
-    self:SendSystemChatLine( self:GetPlayerLink(playerName).." "..strjoin(" ", unpack(self:GetPlayerZonePerformance(zone))) );
+    self:SendSystemChatLine( self:GetPlayerLink(playerName).." "..strjoin(" ", self:GetPlayerZonePerformance(zone)) );
   end
 end
 
