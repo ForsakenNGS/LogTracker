@@ -122,8 +122,42 @@ function LogTracker:GetPlayerData(playerFull, realmNameExplicit)
   if not addonLoaded then
     return nil;
   end
-  local characterData = _G["LogTracker_CharacterData_"..region];
-  return characterData[playerFull], playerName, realmName;
+  local characterDataRaw = _G["LogTracker_CharacterData_"..region][playerFull];
+  local characterData = nil;
+  -- Unpack character data into a more accessible format
+  if characterDataRaw then
+    local characterPerformance = {};
+    for zoneId, zonePerformance in pairs(characterDataRaw[4]) do
+      -- Zone name
+      local zoneName = "Unknown";
+      if LogTracker_BaseData.zoneNames and LogTracker_BaseData.zoneNames[zoneId] then
+        zoneName = LogTracker_BaseData.zoneNames[zoneId]['name'];
+      end
+      -- Allstars rankings
+      local zoneAllstars = {};
+      for _, zoneAllstarsRaw in ipairs(zonePerformance[3]) do
+        tinsert(zoneAllstars, {
+          ['spec'] = zoneAllstarsRaw[1],
+          ['percentRank'] = zoneAllstarsRaw[2]
+        });
+      end
+      -- Zone details
+      characterPerformance[zoneId] = {
+        ['zoneName'] = zoneName,
+        ['zoneEncounters'] = zonePerformance[1],
+        ['encountersKilled'] = zonePerformance[2],
+        ['allstars'] = zoneAllstars
+      }
+    end
+    -- Character details
+    characterData = {
+      ['level'] = characterDataRaw[1],
+      ['faction'] = characterDataRaw[2],
+      ['last_update'] = characterDataRaw[3],
+      ['performance'] = characterPerformance,
+    };
+  end
+  return characterData, playerName, realmName;
 end
 
 function LogTracker:GetPlayerZonePerformance(zone)
@@ -152,13 +186,13 @@ function LogTracker:SendSystemChatLine(text)
 end
 
 function LogTracker:SendPlayerInfoToChat(playerData, playerName, playerRealm)
-  for _, zone in ipairs(playerData.performance) do
+  for zoneId, zone in pairs(playerData.performance) do
     self:SendSystemChatLine( self:GetPlayerLink(playerName).." "..strjoin(" ", self:GetPlayerZonePerformance(zone)) );
   end
 end
 
 function LogTracker:SetPlayerInfoTooltip(playerData, playerName, playerRealm)
-  for _, zone in ipairs(playerData.performance) do
+  for zoneId, zone in pairs(playerData.performance) do
     local zoneName, zoneProgress, zoneSpecs = self:GetPlayerZonePerformance(zone);
     GameTooltip:AddDoubleLine(
       zoneName.." "..zoneProgress, zoneSpecs,
