@@ -4,6 +4,7 @@ LogTracker = CreateFrame("Frame", "LogTracker", UIParent);
 
 function LogTracker:Init()
   self.debug = false;
+  self.playerDataFiltered = false;
   self:LogDebug("Init");
   self:SetScript("OnEvent", self.OnEvent);
   self:RegisterEvent("CHAT_MSG_SYSTEM");
@@ -48,7 +49,8 @@ function LogTracker:OnTooltipSetUnit()
   if not UnitIsPlayer(unitId) then
     return;
   end
-  local playerData, playerName, playerRealm = self:GetPlayerData( UnitName(unitId) );
+  local unitName, unitRealm = UnitName(unitId);
+  local playerData, playerName, playerRealm = self:GetPlayerData(unitName, unitRealm);
   if playerData then
     self:SetPlayerInfoTooltip(playerData, playerName, playerRealm);
   end
@@ -121,6 +123,17 @@ function LogTracker:GetPlayerData(playerFull, realmNameExplicit)
   local addonLoaded = LoadAddOn("LogTracker_CharacterData_"..region);
   if not addonLoaded then
     return nil;
+  end
+  if not self.playerDataFiltered then
+    self.playerDataFiltered = true;
+    local playerRealm = GetRealmName();
+    local removeCount = 0;
+    for playerName, playerData in pairs(_G["LogTracker_CharacterData_"..region]) do
+      if not string.match(playerName, "\-"..playerRealm.."$") then
+        _G["LogTracker_CharacterData_"..region][playerName] = nil;
+        removeCount = removeCount + 1;
+      end
+    end
   end
   local characterDataRaw = _G["LogTracker_CharacterData_"..region][playerFull];
   local characterData = nil;
