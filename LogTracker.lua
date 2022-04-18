@@ -109,7 +109,7 @@ function LogTracker:GetPlayerData(playerFull, realmNameExplicit)
   end
   local playerName, realmName = strsplit("-", playerFull);
   if not realmName then
-    if not realmNameExplicit then
+    if not realmNameExplicit or (realmNameExplicit == "") then
       realmName = GetRealmName();
     else
       realmName = realmNameExplicit
