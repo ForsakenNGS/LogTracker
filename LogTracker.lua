@@ -9,8 +9,11 @@ function LogTracker:Init()
   self:RegisterEvent("CHAT_MSG_SYSTEM");
   self:RegisterEvent("MODIFIER_STATE_CHANGED");
   --self:RegisterEvent("UPDATE_MOUSEOVER_UNIT");
-  GameTooltip:HookScript("OnTooltipSetUnit", function(tooltip)
-    LogTracker:OnTooltipSetUnit();
+  GameTooltip:HookScript("OnTooltipSetUnit", function(tooltip, ...)
+    LogTracker:OnTooltipSetUnit(tooltip, ...);
+  end);
+  GameTooltip:HookScript("OnShow", function(tooltip, ...)
+    LogTracker:OnTooltipShow(tooltip, ...);
   end);
   -- Register shlash command
   SLASH_LOGTRACKER1, SLASH_LOGTRACKER2 = '/lt', '/logtracker';
@@ -68,7 +71,37 @@ function LogTracker:OnModifierStateChanged()
   end
 end
 
-function LogTracker:OnTooltipSetUnit()
+function LogTracker:IsTooltipLFGPlayer(tooltip)
+  local tooltipName = tooltip:GetName();
+  local firstLine = _G[tooltipName.."TextLeft1"];
+  if not firstLine or (firstLine:GetText() ~= LFG_TITLE) then
+    return false;
+  end
+  local secondLine = _G[tooltipName.."TextLeft2"];
+  if not secondLine or not secondLine:GetText() then
+    return false;
+  end
+  return true;
+end
+
+function LogTracker:OnTooltipShow(tooltip, ...)
+  if self:IsTooltipLFGPlayer(tooltip) then
+    self:OnTooltipShow_LFGPlayer(tooltip);
+  end
+end
+
+function LogTracker:OnTooltipShow_LFGPlayer(tooltip, ...)
+  local tooltipName = tooltip:GetName();
+  local playerLine = _G[tooltipName.."TextLeft2"]:GetText();
+  local playerNameTooltip = strsplit("-", playerLine);
+  playerNameTooltip = strtrim(playerNameTooltip);
+  local playerData, playerName, playerRealm = self:GetPlayerData(playerNameTooltip);
+  if playerData then
+    self:SetPlayerInfoTooltip(playerData, playerName, playerRealm, true);
+  end
+end
+
+function LogTracker:OnTooltipSetUnit(tooltip, ...)
   local unitName, unitId = GameTooltip:GetUnit();
   if not UnitIsPlayer(unitId) then
     return;
@@ -144,7 +177,9 @@ end
 
 function LogTracker:GetColoredPercent(value)
   value = floor(value);
-  if (value >= 95) then
+  if (value >= 99) then
+    return "|cffe268a8"..value.."|r";
+  elseif (value >= 95) then
     return "|cffffa000"..value.."|r";
   elseif (value >= 75) then
     return "|cffdd80ff"..value.."|r";
@@ -292,7 +327,7 @@ function LogTracker:SendPlayerInfoToChat(playerData, playerName, playerRealm, sh
   end
 end
 
-function LogTracker:SetPlayerInfoTooltip(playerData, playerName, playerRealm)
+function LogTracker:SetPlayerInfoTooltip(playerData, playerName, playerRealm, disableShiftNotice)
   for zoneId, zone in pairs(playerData.performance) do
     local zoneName, zoneProgress, zoneSpecs = self:GetPlayerZonePerformance(zone, playerData.class);
     GameTooltip:AddDoubleLine(
@@ -309,7 +344,7 @@ function LogTracker:SetPlayerInfoTooltip(playerData, playerName, playerRealm)
       end
     end
   end
-  if not IsShiftKeyDown() then
+  if not IsShiftKeyDown() and not disableShiftNotice then
     GameTooltip:AddLine(
       self:GetColoredText("muted", L["SHIFT_FOR_DETAILS"]),
       255, 255, 255
