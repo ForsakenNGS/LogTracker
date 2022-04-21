@@ -2,6 +2,7 @@
 ## Title: LogTracker
 ## Version: 1.1.1
 ## Author: Mylaerla-Everlook
+## SavedVariables: LogTrackerDB
 ## Notes: Track players logs ingame via tooltip/who
 ## DefaultState: enabled
 ## Dependencies: LogTracker_BaseData

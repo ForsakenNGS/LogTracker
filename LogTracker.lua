@@ -4,8 +4,16 @@ LogTracker = CreateFrame("Frame", "LogTracker", UIParent);
 
 function LogTracker:Init()
   self.debug = false;
+  self.defaults = {
+    chatExtension = true,
+    tooltipExtension = true,
+    lfgExtension = true,
+    slashExtension = true
+  };
+  self.db = CopyTable(self.defaults);
   self:LogDebug("Init");
   self:SetScript("OnEvent", self.OnEvent);
+  self:RegisterEvent("ADDON_LOADED");
   self:RegisterEvent("CHAT_MSG_SYSTEM");
   self:RegisterEvent("MODIFIER_STATE_CHANGED");
   --self:RegisterEvent("UPDATE_MOUSEOVER_UNIT");
@@ -15,11 +23,44 @@ function LogTracker:Init()
   GameTooltip:HookScript("OnShow", function(tooltip, ...)
     LogTracker:OnTooltipShow(tooltip, ...);
   end);
-  -- Register shlash command
-  SLASH_LOGTRACKER1, SLASH_LOGTRACKER2 = '/lt', '/logtracker';
-  SlashCmdList.LOGTRACKER = function(...)
-    LogTracker:OnSlashCommand(...);
-  end
+end
+
+function LogTracker:InitOptions()
+  self.optionsPanel = CreateFrame("Frame");
+  self.optionsPanel.name = "LogTracker";
+  InterfaceOptions_AddCategory(self.optionsPanel);
+  -- Chat integration
+  self.optionCheckChat = CreateFrame("CheckButton", nil, self.optionsPanel, "InterfaceOptionsCheckButtonTemplate");
+	self.optionCheckChat:SetPoint("TOPLEFT", 20, -20);
+	self.optionCheckChat.Text:SetText(L["OPTION_CHAT"]);
+	self.optionCheckChat:SetScript("OnClick", function()
+		self.db.chatExtension = self.optionCheckChat:GetChecked();
+	end)
+	self.optionCheckChat:SetChecked(self.db.chatExtension);
+  -- Player tooltip integration
+  self.optionCheckTooltip = CreateFrame("CheckButton", nil, self.optionsPanel, "InterfaceOptionsCheckButtonTemplate");
+	self.optionCheckTooltip:SetPoint("TOPLEFT", 20, -40);
+	self.optionCheckTooltip.Text:SetText(L["OPTION_TOOLTIP"]);
+	self.optionCheckTooltip:SetScript("OnClick", function()
+		self.db.tooltipExtension = self.optionCheckTooltip:GetChecked();
+	end)
+	self.optionCheckTooltip:SetChecked(self.db.tooltipExtension);
+  -- Player tooltip integration
+  self.optionCheckLFG = CreateFrame("CheckButton", nil, self.optionsPanel, "InterfaceOptionsCheckButtonTemplate");
+	self.optionCheckLFG:SetPoint("TOPLEFT", 20, -60);
+	self.optionCheckLFG.Text:SetText(L["OPTION_LFG"]);
+	self.optionCheckLFG:SetScript("OnClick", function(_, value)
+		self.db.lfgExtension = self.optionCheckLFG:GetChecked();
+	end)
+	self.optionCheckLFG:SetChecked(self.db.lfgExtension);
+  -- Slash command
+  self.optionCheckSlash = CreateFrame("CheckButton", nil, self.optionsPanel, "InterfaceOptionsCheckButtonTemplate");
+	self.optionCheckSlash:SetPoint("TOPLEFT", 20, -80);
+	self.optionCheckSlash.Text:SetText(L["OPTION_SLASH_CMD"]);
+	self.optionCheckSlash:SetScript("OnClick", function(_, value)
+		self.db.slashExtension = self.optionCheckSlash:GetChecked();
+	end)
+	self.optionCheckSlash:SetChecked(self.db.slashExtension);
 end
 
 function LogTracker:LogOutput(...)
@@ -40,6 +81,9 @@ function LogTracker:AddPlayerInfoToTooltip(targetName)
 end
 
 function LogTracker:OnSlashCommand(arguments)
+  if not self.db.slashExtension then
+    return;
+  end
   --self:LogOutput("OnSlashCommand", arguments);
   local playerData, playerName, playerRealm = self:GetPlayerData(arguments);
   if playerData then
@@ -51,7 +95,9 @@ function LogTracker:OnSlashCommand(arguments)
 end
 
 function LogTracker:OnEvent(event, ...)
-  if (event == "CHAT_MSG_SYSTEM") then
+  if (event == "ADDON_LOADED") then
+    self:OnAddonLoaded(...);
+  elseif (event == "CHAT_MSG_SYSTEM") then
     self:OnChatMsgSystem(...);
   elseif (event == "UPDATE_MOUSEOVER_UNIT") then
     self:OnMouseoverUnit(...);
@@ -62,7 +108,27 @@ function LogTracker:OnEvent(event, ...)
   end
 end
 
+function LogTracker:OnAddonLoaded(addonName)
+  if (addonName ~= "LogTracker") then
+    return;
+  end
+  LogTrackerDB = LogTrackerDB or self.db;
+  self.db = LogTrackerDB;
+  -- Init options panel
+  self:InitOptions();
+  -- Register shlash command
+  if self.db.slashExtension then
+    SLASH_LOGTRACKER1, SLASH_LOGTRACKER2 = '/lt', '/logtracker';
+    SlashCmdList.LOGTRACKER = function(...)
+      LogTracker:OnSlashCommand(...);
+    end
+  end
+end
+
 function LogTracker:OnChatMsgSystem(text)
+  if not self.db.chatExtension then
+    return;
+  end
   local _, _, name, linkText = string.find(text, "|Hplayer:([^:]*)|h%[([^%[%]]*)%]?|h");
   if name then
     local playerData, playerName, playerRealm = self:GetPlayerData(name);
@@ -73,12 +139,33 @@ function LogTracker:OnChatMsgSystem(text)
 end
 
 function LogTracker:OnModifierStateChanged()
+  if not self.db.tooltipExtension then
+    return;
+  end
   if (UnitExists("mouseover")) then
     GameTooltip:SetUnit("mouseover");
   end
 end
 
+function LogTracker:OnTooltipSetUnit(tooltip, ...)
+  if not self.db.tooltipExtension then
+    return;
+  end
+  local unitName, unitId = GameTooltip:GetUnit();
+  if not UnitIsPlayer(unitId) then
+    return;
+  end
+  local unitName, unitRealm = UnitName(unitId);
+  local playerData, playerName, playerRealm = self:GetPlayerData(unitName, unitRealm);
+  if playerData then
+    self:SetPlayerInfoTooltip(playerData, playerName, playerRealm);
+  end
+end
+
 function LogTracker:IsTooltipLFGPlayer(tooltip)
+  if not self.db.lfgExtension then
+    return false;
+  end
   local tooltipName = tooltip:GetName();
   local firstLine = _G[tooltipName.."TextLeft1"];
   if not firstLine or (firstLine:GetText() ~= LFG_TITLE) then
@@ -105,18 +192,6 @@ function LogTracker:OnTooltipShow_LFGPlayer(tooltip, ...)
   local playerData, playerName, playerRealm = self:GetPlayerData(playerNameTooltip);
   if playerData then
     self:SetPlayerInfoTooltip(playerData, playerName, playerRealm, true);
-  end
-end
-
-function LogTracker:OnTooltipSetUnit(tooltip, ...)
-  local unitName, unitId = GameTooltip:GetUnit();
-  if not UnitIsPlayer(unitId) then
-    return;
-  end
-  local unitName, unitRealm = UnitName(unitId);
-  local playerData, playerName, playerRealm = self:GetPlayerData(unitName, unitRealm);
-  if playerData then
-    self:SetPlayerInfoTooltip(playerData, playerName, playerRealm);
   end
 end
 
