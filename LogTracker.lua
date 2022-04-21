@@ -8,6 +8,7 @@ function LogTracker:Init()
   self:LogDebug("Init");
   self:SetScript("OnEvent", self.OnEvent);
   self:RegisterEvent("CHAT_MSG_SYSTEM");
+  self:RegisterEvent("MODIFIER_STATE_CHANGED");
   --self:RegisterEvent("UPDATE_MOUSEOVER_UNIT");
   GameTooltip:HookScript("OnTooltipSetUnit", function(tooltip)
     LogTracker:OnTooltipSetUnit();
@@ -29,6 +30,8 @@ function LogTracker:OnEvent(event, ...)
     self:OnChatMsgSystem(...);
   elseif (event == "UPDATE_MOUSEOVER_UNIT") then
     self:OnMouseoverUnit(...);
+  elseif (event == "MODIFIER_STATE_CHANGED") then
+    self:OnModifierStateChanged(...);
   else
     self:LogDebug("OnEvent", event, ...);
   end
@@ -44,6 +47,12 @@ function LogTracker:OnChatMsgSystem(text)
   end
 end
 
+function LogTracker:OnModifierStateChanged()
+  if (UnitExists("mouseover")) then
+    GameTooltip:SetUnit("mouseover");
+  end
+end
+
 function LogTracker:OnTooltipSetUnit()
   local unitName, unitId = GameTooltip:GetUnit();
   if not UnitIsPlayer(unitId) then
@@ -56,11 +65,53 @@ function LogTracker:OnTooltipSetUnit()
   end
 end
 
+function LogTracker:GetIconSized(iconTemplate, width, height)
+  local iconString = gsub(gsub(iconTemplate, "%%w", width), "%%h", height);
+  return "|T"..iconString.."|t";
+end
+
+-- /script print(LogTracker:GetClassIcon("Priest"))
+-- /script print("\124TInterface/AddOns/LogTracker/Icons/classes:36:36:0:0:256:512:180:216:36:72\124t")
+-- /script print("\124TInterface/InventoryItems/WoWUnknownItem01\124t")
+function LogTracker:GetClassIcon(classNameOrId, width, height)
+  if not width then
+    width = 18;
+  end
+  if not height then
+    height = 18;
+  end
+  local addonLoaded = LoadAddOn("LogTracker_BaseData");
+  if not addonLoaded or not LogTracker_BaseData or not LogTracker_BaseData.classes or not LogTracker_BaseData.classes[classNameOrId] then
+    return self:GetIconSized("Interface/InventoryItems/WoWUnknownItem01:%w:%h", width, height);
+  end
+  local classData = LogTracker_BaseData.classes[classNameOrId];
+  return self:GetIconSized(classData.icon, width, height);
+end
+
+function LogTracker:GetSpecIcon(classNameOrId, specNameOrId, width, height)
+  if not width then
+    width = 14;
+  end
+  if not height then
+    height = 14;
+  end
+  local addonLoaded = LoadAddOn("LogTracker_BaseData");
+  if not addonLoaded or not LogTracker_BaseData or not LogTracker_BaseData.classes or not LogTracker_BaseData.classes[classNameOrId]
+      or not LogTracker_BaseData.classes[classNameOrId].specs or not LogTracker_BaseData.classes[classNameOrId].specs[specNameOrId] then
+    return self:GetIconSized("Interface/InventoryItems/WoWUnknownItem01:%w:%h", width, height);
+  end
+  local classData = LogTracker_BaseData.classes[classNameOrId];
+  local specData = classData.specs[specNameOrId];
+  return self:GetIconSized(specData.icon, width, height);
+end
+
 function LogTracker:GetColoredText(type, text)
   if (type == "zone") then
     return "|cff8000ff"..text.."|r";
   elseif (type == "spec") then
     return "|cffffffff"..text.."|r";
+  elseif (type == "muted") then
+    return "|cff808080"..text.."|r";
   else
     return text;
   end
@@ -140,7 +191,7 @@ function LogTracker:GetPlayerData(playerFull, realmNameExplicit)
   -- Unpack character data into a more accessible format
   if characterDataRaw then
     local characterPerformance = {};
-    for zoneId, zonePerformance in pairs(characterDataRaw[4]) do
+    for zoneId, zonePerformance in pairs(characterDataRaw[5]) do
       -- Zone name
       local zoneName = "Unknown";
       if LogTracker_BaseData.zoneNames and LogTracker_BaseData.zoneNames[zoneId] then
@@ -150,8 +201,20 @@ function LogTracker:GetPlayerData(playerFull, realmNameExplicit)
       local zoneAllstars = {};
       for _, zoneAllstarsRaw in ipairs(zonePerformance[3]) do
         tinsert(zoneAllstars, {
-          ['spec'] = zoneAllstarsRaw[1],
+          ['spec'] = tonumber(zoneAllstarsRaw[1]),
           ['percentRank'] = zoneAllstarsRaw[2]
+        });
+      end
+      -- Encounters
+      local zoneEncounters = {};
+      local zoneEncountersStr = { strsplit("|", zonePerformance[4]) };
+      for zoneEncounterIndex, zoneEncountersRaw in ipairs(zoneEncountersStr) do
+        zoneEncountersRaw = { strsplit(",", zoneEncountersRaw) };
+        tinsert(zoneEncounters, {
+          ['spec'] = tonumber(zoneEncountersRaw[1]),
+          ['encounter'] = LogTracker_BaseData.zoneEncounters[zoneId][zoneEncounterIndex],
+          ['percentRank'] = zoneEncountersRaw[2],
+          ['percentMedian'] = zoneEncountersRaw[3]
         });
       end
       -- Zone details
@@ -159,32 +222,43 @@ function LogTracker:GetPlayerData(playerFull, realmNameExplicit)
         ['zoneName'] = zoneName,
         ['zoneEncounters'] = zonePerformance[1],
         ['encountersKilled'] = zonePerformance[2],
-        ['allstars'] = zoneAllstars
+        ['allstars'] = zoneAllstars,
+        ['encounters'] = zoneEncounters
       }
     end
     -- Character details
     characterData = {
       ['level'] = characterDataRaw[1],
       ['faction'] = characterDataRaw[2],
-      ['last_update'] = characterDataRaw[3],
+      ['class'] = tonumber(characterDataRaw[3]),
+      ['last_update'] = characterDataRaw[4],
       ['performance'] = characterPerformance,
     };
   end
   return characterData, playerName, realmName;
 end
 
-function LogTracker:GetPlayerZonePerformance(zone)
+function LogTracker:GetPlayerZonePerformance(zone, playerClass)
   local zoneName = zone.zoneName;
   local zoneProgress = self:GetColoredProgress(tonumber(zone.encountersKilled), tonumber(zone.zoneEncounters));
   local zoneRatingsStr = "";
   local zoneRatings = {};
   for _, allstarsRating in ipairs(zone.allstars) do
-    tinsert(zoneRatings, self:GetColoredText("spec", allstarsRating.spec)..": "..self:GetColoredPercent(allstarsRating.percentRank));
+    tinsert(zoneRatings, self:GetColoredPercent(allstarsRating.percentRank).." "..self:GetSpecIcon(playerClass, allstarsRating.spec));
   end
   if #(zoneRatings) > 0 then
-    zoneRatingsStr = "("..strjoin(", ", unpack(zoneRatings))..")";
+    zoneRatingsStr = strjoin(" ", unpack(zoneRatings));
   end
   return self:GetColoredText("zone", zoneName), self:GetColoredText("progress", zoneProgress), zoneRatingsStr;
+end
+
+function LogTracker:GetPlayerEncounterPerformance(encounter, playerClass)
+  local encounterName = encounter.encounter.name;
+  if (encounter.spec == 0) then
+    return "---";
+  end
+  local encounterRating = self:GetColoredPercent(encounter.percentRank).." "..self:GetSpecIcon(playerClass, encounter.spec);
+  return self:GetColoredText("encounter", encounterName), encounterRating;
 end
 
 function LogTracker:SendSystemChatLine(text)
@@ -200,19 +274,34 @@ end
 
 function LogTracker:SendPlayerInfoToChat(playerData, playerName, playerRealm)
   for zoneId, zone in pairs(playerData.performance) do
-    self:SendSystemChatLine( self:GetPlayerLink(playerName).." "..strjoin(" ", self:GetPlayerZonePerformance(zone)) );
+    self:SendSystemChatLine( self:GetPlayerLink(playerName).." "..strjoin(" ", self:GetPlayerZonePerformance(zone, playerData.class)) );
   end
 end
 
 function LogTracker:SetPlayerInfoTooltip(playerData, playerName, playerRealm)
   for zoneId, zone in pairs(playerData.performance) do
-    local zoneName, zoneProgress, zoneSpecs = self:GetPlayerZonePerformance(zone);
+    local zoneName, zoneProgress, zoneSpecs = self:GetPlayerZonePerformance(zone, playerData.class);
     GameTooltip:AddDoubleLine(
       zoneName.." "..zoneProgress, zoneSpecs,
       255, 255, 255, 255, 255, 255
     );
-    GameTooltip:Show();
+    if IsShiftKeyDown() then
+      for _, encounter in ipairs(zone.encounters) do
+        local encounterName, encounterRating = self:GetPlayerEncounterPerformance(encounter, playerData.class);
+        GameTooltip:AddDoubleLine(
+          "  "..encounterName, encounterRating,
+          255, 255, 255, 255, 255, 255
+        );
+      end
+    end
   end
+  if not IsShiftKeyDown() then
+    GameTooltip:AddLine(
+      self:GetColoredText("muted", L["SHIFT_FOR_DETAILS"]),
+      255, 255, 255
+    );
+  end
+  GameTooltip:Show();
 end
 
 -- Kickstart the addon
