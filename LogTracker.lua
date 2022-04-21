@@ -262,9 +262,9 @@ function LogTracker:GetPlayerEncounterPerformance(encounter, playerClass, revers
     return "---";
   end
   local encounterRating = self:GetSpecIcon(playerClass, encounter.spec).." "..self:GetColoredPercent(encounter.percentRank);
-  if (reversed) {
+  if (reversed) then
     encounterRating = self:GetColoredPercent(encounter.percentRank).." "..self:GetSpecIcon(playerClass, encounter.spec);
-  }
+  end
   return self:GetColoredText("encounter", encounterName), encounterRating;
 end
 
