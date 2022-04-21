@@ -32,6 +32,13 @@ function LogTracker:LogDebug(...)
   end
 end
 
+function LogTracker:AddPlayerInfoToTooltip(targetName)
+  local playerData, playerName, playerRealm = self:GetPlayerData(targetName);
+  if playerData then
+    self:SetPlayerInfoTooltip(playerData, playerName, playerRealm);
+  end
+end
+
 function LogTracker:OnSlashCommand(arguments)
   --self:LogOutput("OnSlashCommand", arguments);
   local playerData, playerName, playerRealm = self:GetPlayerData(arguments);
@@ -123,10 +130,10 @@ end
 -- /script print("\124TInterface/InventoryItems/WoWUnknownItem01\124t")
 function LogTracker:GetClassIcon(classNameOrId, width, height)
   if not width then
-    width = 18;
+    width = 14;
   end
   if not height then
-    height = 18;
+    height = 14;
   end
   local addonLoaded = LoadAddOn("LogTracker_BaseData");
   if not addonLoaded or not LogTracker_BaseData or not LogTracker_BaseData.classes or not LogTracker_BaseData.classes[classNameOrId] then
@@ -155,7 +162,7 @@ end
 
 function LogTracker:GetColoredText(type, text)
   if (type == "zone") then
-    return "|cffdd80ff"..text.."|r";
+    return "|cffdd60ff"..text.."|r";
   elseif (type == "spec") then
     return "|cffffffff"..text.."|r";
   elseif (type == "muted") then
@@ -182,7 +189,7 @@ function LogTracker:GetColoredPercent(value)
   elseif (value >= 95) then
     return "|cffffa000"..value.."|r";
   elseif (value >= 75) then
-    return "|cffdd80ff"..value.."|r";
+    return "|cffdd60ff"..value.."|r";
   elseif (value >= 50) then
     return "|cff6060ff"..value.."|r";
   elseif (value >= 25) then
