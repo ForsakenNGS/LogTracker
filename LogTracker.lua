@@ -4,7 +4,6 @@ LogTracker = CreateFrame("Frame", "LogTracker", UIParent);
 
 function LogTracker:Init()
   self.debug = false;
-  self.playerDataFiltered = false;
   self:LogDebug("Init");
   self:SetScript("OnEvent", self.OnEvent);
   self:RegisterEvent("CHAT_MSG_SYSTEM");
@@ -13,6 +12,11 @@ function LogTracker:Init()
   GameTooltip:HookScript("OnTooltipSetUnit", function(tooltip)
     LogTracker:OnTooltipSetUnit();
   end);
+  -- Register shlash command
+  SLASH_LOGTRACKER1, SLASH_LOGTRACKER2 = '/lt', '/logtracker';
+  SlashCmdList.LOGTRACKER = function(...)
+    LogTracker:OnSlashCommand(...);
+  end
 end
 
 function LogTracker:LogOutput(...)
@@ -22,6 +26,17 @@ end
 function LogTracker:LogDebug(...)
   if self.debug then
     print("|cffff0000LT|r", "|cffffff00Debug|r", ...);
+  end
+end
+
+function LogTracker:OnSlashCommand(arguments)
+  --self:LogOutput("OnSlashCommand", arguments);
+  local playerData, playerName, playerRealm = self:GetPlayerData(arguments);
+  if playerData then
+    self:SendSystemChatLine(L["CHAT_PLAYER_DETAILS"].." |Hplayer:"..playerName.."-"..playerRealm.."|h"..playerName.."|h");
+    self:SendPlayerInfoToChat(playerData, playerName, playerRealm, true);
+  else
+    self:SendSystemChatLine(L["CHAT_PLAYER_NOT_FOUND"].." |Hplayer:"..playerName.."-"..playerRealm.."|h"..playerName.."|h");
   end
 end
 
@@ -107,7 +122,7 @@ end
 
 function LogTracker:GetColoredText(type, text)
   if (type == "zone") then
-    return "|cff8000ff"..text.."|r";
+    return "|cffdd80ff"..text.."|r";
   elseif (type == "spec") then
     return "|cffffffff"..text.."|r";
   elseif (type == "muted") then
@@ -132,9 +147,9 @@ function LogTracker:GetColoredPercent(value)
   if (value >= 95) then
     return "|cffffa000"..value.."|r";
   elseif (value >= 75) then
-    return "|cffa000ff"..value.."|r";
+    return "|cffdd80ff"..value.."|r";
   elseif (value >= 50) then
-    return "|cff0000d0"..value.."|r";
+    return "|cff6060ff"..value.."|r";
   elseif (value >= 25) then
     return "|cff00d000"..value.."|r";
   else
@@ -175,18 +190,7 @@ function LogTracker:GetPlayerData(playerFull, realmNameExplicit)
   if not addonLoaded then
     return nil;
   end
-  if not self.playerDataFiltered then
-    self.playerDataFiltered = true;
-    local playerRealm = GetRealmName();
-    local removeCount = 0;
-    for playerName, playerData in pairs(_G["LogTracker_CharacterData_"..region]) do
-      if not string.match(playerName, "\-"..playerRealm.."$") then
-        _G["LogTracker_CharacterData_"..region][playerName] = nil;
-        removeCount = removeCount + 1;
-      end
-    end
-  end
-  local characterDataRaw = _G["LogTracker_CharacterData_"..region][playerFull];
+  local characterDataRaw = _G["LogTracker_CharacterData_"..region][realmName][playerName];
   local characterData = nil;
   -- Unpack character data into a more accessible format
   if characterDataRaw then
@@ -244,7 +248,7 @@ function LogTracker:GetPlayerZonePerformance(zone, playerClass)
   local zoneRatingsStr = "";
   local zoneRatings = {};
   for _, allstarsRating in ipairs(zone.allstars) do
-    tinsert(zoneRatings, self:GetColoredPercent(allstarsRating.percentRank).." "..self:GetSpecIcon(playerClass, allstarsRating.spec));
+    tinsert(zoneRatings, self:GetSpecIcon(playerClass, allstarsRating.spec).." "..self:GetColoredPercent(allstarsRating.percentRank));
   end
   if #(zoneRatings) > 0 then
     zoneRatingsStr = strjoin(" ", unpack(zoneRatings));
@@ -252,12 +256,15 @@ function LogTracker:GetPlayerZonePerformance(zone, playerClass)
   return self:GetColoredText("zone", zoneName), self:GetColoredText("progress", zoneProgress), zoneRatingsStr;
 end
 
-function LogTracker:GetPlayerEncounterPerformance(encounter, playerClass)
+function LogTracker:GetPlayerEncounterPerformance(encounter, playerClass, reversed)
   local encounterName = encounter.encounter.name;
   if (encounter.spec == 0) then
     return "---";
   end
-  local encounterRating = self:GetColoredPercent(encounter.percentRank).." "..self:GetSpecIcon(playerClass, encounter.spec);
+  local encounterRating = self:GetSpecIcon(playerClass, encounter.spec).." "..self:GetColoredPercent(encounter.percentRank);
+  if (reversed) {
+    encounterRating = self:GetColoredPercent(encounter.percentRank).." "..self:GetSpecIcon(playerClass, encounter.spec);
+  }
   return self:GetColoredText("encounter", encounterName), encounterRating;
 end
 
@@ -272,9 +279,16 @@ function LogTracker:SendSystemChatLine(text)
   end
 end
 
-function LogTracker:SendPlayerInfoToChat(playerData, playerName, playerRealm)
+function LogTracker:SendPlayerInfoToChat(playerData, playerName, playerRealm, showEncounters)
   for zoneId, zone in pairs(playerData.performance) do
+    local zoneName, zoneProgress, zoneSpecs = self:GetPlayerZonePerformance(zone, playerData.class);
     self:SendSystemChatLine( self:GetPlayerLink(playerName).." "..strjoin(" ", self:GetPlayerZonePerformance(zone, playerData.class)) );
+    if showEncounters then
+      for _, encounter in ipairs(zone.encounters) do
+        local encounterName, encounterRating = self:GetPlayerEncounterPerformance(encounter, playerData.class);
+        self:SendSystemChatLine("  "..encounterName..": "..encounterRating);
+      end
+    end
   end
 end
 
@@ -287,7 +301,7 @@ function LogTracker:SetPlayerInfoTooltip(playerData, playerName, playerRealm)
     );
     if IsShiftKeyDown() then
       for _, encounter in ipairs(zone.encounters) do
-        local encounterName, encounterRating = self:GetPlayerEncounterPerformance(encounter, playerData.class);
+        local encounterName, encounterRating = self:GetPlayerEncounterPerformance(encounter, playerData.class, true);
         GameTooltip:AddDoubleLine(
           "  "..encounterName, encounterRating,
           255, 255, 255, 255, 255, 255

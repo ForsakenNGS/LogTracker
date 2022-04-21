@@ -5,6 +5,10 @@ Currently those are displayed for:
 - Player-Tooltips (mouseover)
 - Chat /who links (shift-click name)
 - Online alerts (guild/friends)
+- Manual player lookup
+
+With the command `/lt <playername>` you can manually lookup a players logs,
+which will also include the details for individual encounters.
 
 The tooltip / description contains the up-to-date content (currently BT/Hyjal and ZA)
 with the number of killed/total bosses and the allstars rating for each spec.
