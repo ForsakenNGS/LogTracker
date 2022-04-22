@@ -304,7 +304,7 @@ function LogTracker:GetPlayerData(playerFull, realmNameExplicit)
     return nil;
   end
   local addonLoaded = LoadAddOn("LogTracker_CharacterData_"..region);
-  if not addonLoaded then
+  if not addonLoaded or not _G["LogTracker_CharacterData_"..region][realmName] then
     return nil;
   end
   local characterDataRaw = _G["LogTracker_CharacterData_"..region][realmName][playerName];
