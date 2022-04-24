@@ -328,15 +328,17 @@ function LogTracker:GetPlayerData(playerFull, realmNameExplicit)
       end
       -- Encounters
       local zoneEncounters = {};
-      local zoneEncountersStr = { strsplit("|", zonePerformance[4]) };
-      for zoneEncounterIndex, zoneEncountersRaw in ipairs(zoneEncountersStr) do
-        zoneEncountersRaw = { strsplit(",", zoneEncountersRaw) };
-        tinsert(zoneEncounters, {
-          ['spec'] = tonumber(zoneEncountersRaw[1]),
-          ['encounter'] = LogTracker_BaseData.zoneEncounters[zoneId][zoneEncounterIndex],
-          ['percentRank'] = zoneEncountersRaw[2],
-          ['percentMedian'] = zoneEncountersRaw[3]
-        });
+      if zonePerformance[4] ~= "" then
+        local zoneEncountersStr = { strsplit("|", zonePerformance[4]) };
+        for zoneEncounterIndex, zoneEncountersRaw in ipairs(zoneEncountersStr) do
+          zoneEncountersRaw = { strsplit(",", zoneEncountersRaw) };
+          tinsert(zoneEncounters, {
+            ['spec'] = tonumber(zoneEncountersRaw[1]),
+            ['encounter'] = LogTracker_BaseData.zoneEncounters[zoneId][zoneEncounterIndex],
+            ['percentRank'] = zoneEncountersRaw[2],
+            ['percentMedian'] = zoneEncountersRaw[3]
+          });
+        end
       end
       -- Zone details
       characterPerformance[zoneId] = {
