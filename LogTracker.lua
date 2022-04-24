@@ -331,7 +331,11 @@ function LogTracker:GetPlayerData(playerFull, realmNameExplicit)
       if zonePerformance[4] ~= "" then
         local zoneEncountersStr = { strsplit("|", zonePerformance[4]) };
         for zoneEncounterIndex, zoneEncountersRaw in ipairs(zoneEncountersStr) do
-          zoneEncountersRaw = { strsplit(",", zoneEncountersRaw) };
+          if (zoneEncountersRaw ~= "") then
+            zoneEncountersRaw = { strsplit(",", zoneEncountersRaw) };
+          else
+            zoneEncountersRaw = { 0, 0, 0 };
+          end
           tinsert(zoneEncounters, {
             ['spec'] = tonumber(zoneEncountersRaw[1]),
             ['encounter'] = LogTracker_BaseData.zoneEncounters[zoneId][zoneEncounterIndex],
