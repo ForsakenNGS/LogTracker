@@ -1,5 +1,0 @@
-package-as: LogTracker
-
-ignore:
-  - README.md
-  - pkgmeta.yaml
