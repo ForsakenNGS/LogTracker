@@ -1,6 +1,6 @@
 ## Interface: 20504
 ## Title: LogTracker
-## Version: 1.1.4
+## Version: 1.1.5
 ## Author: Mylaerla-Everlook
 ## SavedVariables: LogTrackerDB
 ## Notes: Track players logs ingame via tooltip/who
