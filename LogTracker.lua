@@ -413,6 +413,7 @@ function LogTracker:SendPlayerInfoToChat(playerData, playerName, playerRealm, sh
       end
     end
   end
+  self:SendSystemChatLine(L["DATE_UPDATE"]..": "..date(L["DATE_FORMAT"], playerData.last_update));
 end
 
 function LogTracker:SetPlayerInfoTooltip(playerData, playerName, playerRealm, disableShiftNotice)
@@ -420,22 +421,28 @@ function LogTracker:SetPlayerInfoTooltip(playerData, playerName, playerRealm, di
     local zoneName, zoneProgress, zoneSpecs = self:GetPlayerZonePerformance(zone, playerData.class);
     GameTooltip:AddDoubleLine(
       zoneName.." "..zoneProgress, zoneSpecs,
-      255, 255, 255, 255, 255, 255
+      1, 1, 1, 1, 1, 1
     );
     if IsShiftKeyDown() then
       for _, encounter in ipairs(zone.encounters) do
         local encounterName, encounterRating = self:GetPlayerEncounterPerformance(encounter, playerData.class, true);
         GameTooltip:AddDoubleLine(
           "  "..encounterName, encounterRating,
-          255, 255, 255, 255, 255, 255
+          1, 1, 1, 1, 1, 1
         );
       end
     end
   end
+  if IsShiftKeyDown() then
+    GameTooltip:AddDoubleLine(
+      L["DATE_UPDATE"], date(L["DATE_FORMAT"], playerData.last_update),
+      0.5, 0.5, 0.5, 0.5, 0.5, 0.5
+    );
+  end
   if not IsShiftKeyDown() and not disableShiftNotice then
     GameTooltip:AddLine(
       self:GetColoredText("muted", L["SHIFT_FOR_DETAILS"]),
-      255, 255, 255
+      1, 1, 1
     );
   end
   GameTooltip:Show();
