@@ -40,7 +40,7 @@ jobs:
       - name: Create WOTLK Package
         uses: BigWigsMods/packager@master
         with:
-          args: -g wotlk -m .pkgmeta-wotlk
+          args: -g wrath -m .pkgmeta-wrath
         env:
           CF_API_KEY: ${{ secrets.CF_API_KEY }}
           WOWI_API_TOKEN: ${{ secrets.WOWI_API_TOKEN }}
