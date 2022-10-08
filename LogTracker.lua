@@ -312,11 +312,14 @@ function LogTracker:GetPlayerData(playerFull, realmNameExplicit)
   -- Unpack character data into a more accessible format
   if characterDataRaw then
     local characterPerformance = {};
-    for zoneId, zonePerformance in pairs(characterDataRaw[5]) do
+    for zoneIdSize, zonePerformance in pairs(characterDataRaw[5]) do
+      local zoneId, zoneSize = strsplit("-", zoneIdSize);
+      zoneId = tonumber(zoneId);
+      zoneSize = tonumber(zoneSize);
       -- Zone name
-      local zoneName = "Unknown";
+      local zoneName = "Unknown ("..zoneSize..")";
       if LogTracker_BaseData.zoneNames and LogTracker_BaseData.zoneNames[zoneId] then
-        zoneName = LogTracker_BaseData.zoneNames[zoneId]['name'];
+        zoneName = LogTracker_BaseData.zoneNames[zoneId]['name'].." ("..zoneSize..")";
       end
       -- Allstars rankings
       local zoneAllstars = {};
@@ -345,7 +348,7 @@ function LogTracker:GetPlayerData(playerFull, realmNameExplicit)
         end
       end
       -- Zone details
-      characterPerformance[zoneId] = {
+      characterPerformance[zoneIdSize] = {
         ['zoneName'] = zoneName,
         ['zoneEncounters'] = zonePerformance[1],
         ['encountersKilled'] = zonePerformance[2],
@@ -417,7 +420,8 @@ function LogTracker:SendPlayerInfoToChat(playerData, playerName, playerRealm, sh
 end
 
 function LogTracker:SetPlayerInfoTooltip(playerData, playerName, playerRealm, disableShiftNotice)
-  for zoneId, zone in pairs(playerData.performance) do
+  for zoneIdSize, zone in pairs(playerData.performance) do
+    local zoneId, zoneSize = strsplit("-", zoneIdSize)
     local zoneName, zoneProgress, zoneSpecs = self:GetPlayerZonePerformance(zone, playerData.class);
     GameTooltip:AddDoubleLine(
       zoneName.." "..zoneProgress, zoneSpecs,
