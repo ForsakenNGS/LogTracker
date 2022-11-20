@@ -195,11 +195,11 @@ function LogTracker:OnTooltipShow_LFGPlayer(tooltip, ...)
   local playerData, playerName, playerRealm = self:GetPlayerData(playerNameTooltip);
   if playerData then
     GameTooltip:ClearLines();
-    GameTooltip:SetText("LogTracker");
     GameTooltip:SetOwner(LFGBrowseSearchEntryTooltip);
+    GameTooltip:SetText("LogTracker");
     self:SetPlayerInfoTooltip(playerData, playerName, playerRealm, true);
     -- TODO: Solve positioning cleaner
-    C_Timer.After(0.1, function()
+    C_Timer.After(0, function()
       GameTooltip:ClearAllPoints();
       GameTooltip:SetPoint("TOPLEFT", LFGBrowseSearchEntryTooltip, "BOTTOMLEFT", 0, 0);
     end);
