@@ -16,6 +16,7 @@ function LogTracker:Init()
   self:RegisterEvent("ADDON_LOADED");
   self:RegisterEvent("CHAT_MSG_SYSTEM");
   self:RegisterEvent("MODIFIER_STATE_CHANGED");
+  self:RegisterEvent("PLAYER_ENTERING_WORLD");
   --self:RegisterEvent("UPDATE_MOUSEOVER_UNIT");
   GameTooltip:HookScript("OnTooltipSetUnit", function(tooltip, ...)
     LogTracker:OnTooltipSetUnit(tooltip, ...);
@@ -103,6 +104,13 @@ function LogTracker:OnEvent(event, ...)
     self:OnMouseoverUnit(...);
   elseif (event == "MODIFIER_STATE_CHANGED") then
     self:OnModifierStateChanged(...);
+  elseif (event == "PLAYER_ENTERING_WORLD") then
+    -- Hook into Group finder tooltip
+    if LFGBrowseSearchEntryTooltip then
+      hooksecurefunc(LFGBrowseSearchEntryTooltip, "Show", function(tooltip, ...)
+        LogTracker:OnTooltipShow(tooltip, ...);
+      end);
+    end
   else
     self:LogDebug("OnEvent", event, ...);
   end
@@ -166,16 +174,11 @@ function LogTracker:IsTooltipLFGPlayer(tooltip)
   if not self.db.lfgExtension then
     return false;
   end
-  local tooltipName = tooltip:GetName();
-  local firstLine = _G[tooltipName.."TextLeft1"];
-  if not firstLine or (firstLine:GetText() ~= LFG_TITLE) then
+  if LFGBrowseSearchEntryTooltip and (tooltip == LFGBrowseSearchEntryTooltip) then
+    return true;
+  else
     return false;
   end
-  local secondLine = _G[tooltipName.."TextLeft2"];
-  if not secondLine or not secondLine:GetText() then
-    return false;
-  end
-  return true;
 end
 
 function LogTracker:OnTooltipShow(tooltip, ...)
@@ -186,12 +189,23 @@ end
 
 function LogTracker:OnTooltipShow_LFGPlayer(tooltip, ...)
   local tooltipName = tooltip:GetName();
-  local playerLine = _G[tooltipName.."TextLeft2"]:GetText();
+  local playerLine = tooltip.Leader.Name:GetText();
   local playerNameTooltip = strsplit("-", playerLine);
   playerNameTooltip = strtrim(playerNameTooltip);
   local playerData, playerName, playerRealm = self:GetPlayerData(playerNameTooltip);
   if playerData then
+    GameTooltip:ClearLines();
+    GameTooltip:SetText("LogTracker");
+    GameTooltip:SetOwner(LFGBrowseSearchEntryTooltip);
     self:SetPlayerInfoTooltip(playerData, playerName, playerRealm, true);
+    -- TODO: Solve positioning cleaner
+    C_Timer.After(0.1, function()
+      GameTooltip:ClearAllPoints();
+      GameTooltip:SetPoint("TOPLEFT", LFGBrowseSearchEntryTooltip, "BOTTOMLEFT", 0, 0);
+    end);
+  else
+    GameTooltip:ClearLines();
+    GameTooltip:Hide();
   end
 end
 
