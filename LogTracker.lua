@@ -37,6 +37,12 @@ function LogTracker:Init()
       size = 10,
       encounters = { 772 }
     },
+    -- Ulduar 10-man
+    [1106] = {
+      zone = 0,
+      size = 10,
+      encounters = {}
+    },
     -- Naxxramas 25-man
     [1098] = {
       zone = 1015,
@@ -60,6 +66,12 @@ function LogTracker:Init()
       zone = 1016,
       size = 25,
       encounters = { 772 }
+    },
+    -- Ulduar 10-man
+    [1107] = {
+      zone = 0,
+      size = 25,
+      encounters = {}
     },
   };
   self.db = CopyTable(self.defaults);
