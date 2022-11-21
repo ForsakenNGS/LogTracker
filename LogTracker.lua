@@ -173,6 +173,10 @@ function LogTracker:OnEvent(event, ...)
   elseif (event == "MODIFIER_STATE_CHANGED") then
     self:OnModifierStateChanged(...);
   elseif (event == "PLAYER_ENTERING_WORLD") then
+    -- Workaround for misaligned tooltip
+    if TacoTipConfig and not TacoTipConfig.show_guild_name then
+      print(self:GetColoredText("error", L["TACOTIP_GUILD_NAME_WARNING"]));
+    end
     -- Hook into Group finder tooltip
     if LFGBrowseSearchEntryTooltip then
       hooksecurefunc("LFGBrowseSearchEntryTooltip_UpdateAndShow", function(tooltip, ...)
@@ -373,6 +377,8 @@ function LogTracker:GetColoredText(type, text)
     return "|cffffffff"..text.."|r";
   elseif (type == "muted") then
     return "|cff808080"..text.."|r";
+  elseif (type == "error") then
+    return "|cffff0000"..text.."|r";
   else
     return text;
   end
