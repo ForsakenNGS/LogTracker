@@ -117,7 +117,7 @@ function LogTracker:InitOptions()
   -- Show 10 player logs
   self.optionHide10Player = CreateFrame("CheckButton", nil, self.optionsPanel, "InterfaceOptionsCheckButtonTemplate");
 	self.optionHide10Player:SetPoint("TOPLEFT", 20, -100);
-	self.optionHide10Player.Text:SetText(L["OPTION_SHOW_10_PLAYER"]);
+	self.optionHide10Player.Text:SetText(L["OPTION_HIDE_10_PLAYER"]);
 	self.optionHide10Player:SetScript("OnClick", function(_, value)
 		self.db.hide10Player = self.optionHide10Player:GetChecked();
 	end)
@@ -125,7 +125,7 @@ function LogTracker:InitOptions()
   -- Show 25 player logs
   self.optionHide25Player = CreateFrame("CheckButton", nil, self.optionsPanel, "InterfaceOptionsCheckButtonTemplate");
 	self.optionHide25Player:SetPoint("TOPLEFT", 20, -120);
-	self.optionHide25Player.Text:SetText(L["OPTION_SHOW_25_PLAYER"]);
+	self.optionHide25Player.Text:SetText(L["OPTION_HIDE_25_PLAYER"]);
 	self.optionHide25Player:SetScript("OnClick", function(_, value)
 		self.db.hide25Player = self.optionHide25Player:GetChecked();
 	end)
