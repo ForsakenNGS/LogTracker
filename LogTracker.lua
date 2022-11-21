@@ -8,7 +8,59 @@ function LogTracker:Init()
     chatExtension = true,
     tooltipExtension = true,
     lfgExtension = true,
-    slashExtension = true
+    slashExtension = true,
+    hide10Player = false,
+    hide25Player = false
+  };
+  self.activityDetails = {
+    -- Naxxramas 10-man
+    [841] = {
+      zone = 1015,
+      size = 10,
+      encounters = { 101107, 101108, 101109, 101110, 101111, 101112, 101113, 101114, 101115, 101116, 101117, 101118, 101119, 101120, 101121 }
+    },
+    -- The Obsidian Sanctum 10-man
+    [1101] = {
+      zone = 1015,
+      size = 10,
+      encounters = { 742 }
+    },
+    -- The Eye of Eternity 10-man
+    [1102] = {
+      zone = 1015,
+      size = 10,
+      encounters = { 734 }
+    },
+    -- Vault of Archavon 10-man
+    [1095] = {
+      zone = 1016,
+      size = 10,
+      encounters = { 772 }
+    },
+    -- Naxxramas 25-man
+    [1098] = {
+      zone = 1015,
+      size = 25,
+      encounters = { 101107, 101108, 101109, 101110, 101111, 101112, 101113, 101114, 101115, 101116, 101117, 101118, 101119, 101120, 101121 }
+    },
+    -- The Obsidian Sanctum 25-man
+    [1097] = {
+      zone = 1015,
+      size = 25,
+      encounters = { 742 }
+    },
+    -- The Eye of Eternity 25-man
+    [1094] = {
+      zone = 1015,
+      size = 25,
+      encounters = { 734 }
+    },
+    -- Vault of Archavon 25-man
+    [1096] = {
+      zone = 1016,
+      size = 25,
+      encounters = { 772 }
+    },
   };
   self.db = CopyTable(self.defaults);
   self:LogDebug("Init");
@@ -62,6 +114,22 @@ function LogTracker:InitOptions()
 		self.db.slashExtension = self.optionCheckSlash:GetChecked();
 	end)
 	self.optionCheckSlash:SetChecked(self.db.slashExtension);
+  -- Show 10 player logs
+  self.optionHide10Player = CreateFrame("CheckButton", nil, self.optionsPanel, "InterfaceOptionsCheckButtonTemplate");
+	self.optionHide10Player:SetPoint("TOPLEFT", 20, -100);
+	self.optionHide10Player.Text:SetText(L["OPTION_SHOW_10_PLAYER"]);
+	self.optionHide10Player:SetScript("OnClick", function(_, value)
+		self.db.hide10Player = self.optionHide10Player:GetChecked();
+	end)
+	self.optionHide10Player:SetChecked(self.db.hide10Player);
+  -- Show 25 player logs
+  self.optionHide25Player = CreateFrame("CheckButton", nil, self.optionsPanel, "InterfaceOptionsCheckButtonTemplate");
+	self.optionHide25Player:SetPoint("TOPLEFT", 20, -120);
+	self.optionHide25Player.Text:SetText(L["OPTION_SHOW_25_PLAYER"]);
+	self.optionHide25Player:SetScript("OnClick", function(_, value)
+		self.db.hide25Player = self.optionHide25Player:GetChecked();
+	end)
+	self.optionHide25Player:SetChecked(self.db.hide25Player);
 end
 
 function LogTracker:LogOutput(...)
@@ -107,7 +175,7 @@ function LogTracker:OnEvent(event, ...)
   elseif (event == "PLAYER_ENTERING_WORLD") then
     -- Hook into Group finder tooltip
     if LFGBrowseSearchEntryTooltip then
-      hooksecurefunc(LFGBrowseSearchEntryTooltip, "Show", function(tooltip, ...)
+      hooksecurefunc("LFGBrowseSearchEntryTooltip_UpdateAndShow", function(tooltip, ...)
         LogTracker:OnTooltipShow(tooltip, ...);
       end);
     end
@@ -183,29 +251,78 @@ end
 
 function LogTracker:OnTooltipShow(tooltip, ...)
   if self:IsTooltipLFGPlayer(tooltip) then
-    self:OnTooltipShow_LFGPlayer(tooltip);
+    self:OnTooltipShow_LFGPlayer(tooltip, ...);
   end
 end
 
-function LogTracker:OnTooltipShow_LFGPlayer(tooltip, ...)
+function LogTracker:OnTooltipShow_LFGPlayer(tooltip, resultID)
+  local logTargets = nil;
+  local searchResultInfo = C_LFGList.GetSearchResultInfo(resultID);
+  if #searchResultInfo.activityIDs > 0 then
+    for i, activityID in ipairs(searchResultInfo.activityIDs) do
+      local activityDetails = self.activityDetails[activityID];
+      if activityDetails then
+        local activityKey = activityDetails.zone.."-"..activityDetails.size;
+        if not logTargets then
+          logTargets = {};
+        end
+        if not logTargets[activityKey] then
+          logTargets[activityKey] = {};
+        end
+        for e, encounterID in ipairs(activityDetails.encounters) do
+          if not tContains(logTargets[activityKey], encounterID) then
+            tinsert(logTargets[activityKey], encounterID);
+          end
+        end
+      end
+    end
+  end
+  -- Tooltip for lead / single player
   local tooltipName = tooltip:GetName();
   local playerLine = tooltip.Leader.Name:GetText();
   local playerNameTooltip = strsplit("-", playerLine);
   playerNameTooltip = strtrim(playerNameTooltip);
   local playerData, playerName, playerRealm = self:GetPlayerData(playerNameTooltip);
   if playerData then
+    -- Add instance top rank for leader
+    if not tooltip.Leader.Logs then
+      tooltip.Leader.Logs = tooltip.Leader:CreateFontString(nil, "ARTWORK", "GameFontNormal");
+      tooltip.Leader.Logs:SetPoint("TOPLEFT", tooltip.Leader.Role, "TOPRIGHT", 32, -2)
+    end
+    tooltip.Leader.Logs:SetText(self:GetPlayerOverallPerformance(playerData, logTargets));
+    -- Add tooltip for leader
     GameTooltip:ClearLines();
     GameTooltip:SetOwner(LFGBrowseSearchEntryTooltip);
-    GameTooltip:SetText("LogTracker");
+    GameTooltip:SetText(playerNameTooltip);
     self:SetPlayerInfoTooltip(playerData, playerName, playerRealm, true);
     -- TODO: Solve positioning cleaner
     C_Timer.After(0, function()
       GameTooltip:ClearAllPoints();
-      GameTooltip:SetPoint("TOPLEFT", LFGBrowseSearchEntryTooltip, "BOTTOMLEFT", 0, 0);
+      GameTooltip:SetPoint("TOPLEFT", LFGBrowseSearchEntryTooltip, "BOTTOMLEFT");
     end);
   else
     GameTooltip:ClearLines();
     GameTooltip:Hide();
+  end
+  -- Tooltip for additional members
+  for frame in tooltip.memberPool:EnumerateActive() do
+    self:OnTooltipShow_LFGMember(frame, logTargets);
+  end
+  -- Increase width to prevent overlap
+  tooltip:SetWidth( tooltip:GetWidth() + 32 );
+end
+
+function LogTracker:OnTooltipShow_LFGMember(frame, logTargets)
+  if not frame.Logs then
+    frame.Logs = frame:CreateFontString(nil, "ARTWORK", "GameFontNormal");
+    frame.Logs:SetPoint("TOPLEFT", frame.Role, "TOPRIGHT", 32, -2)
+  end
+  local memberName = frame.Name:GetText();
+  local playerData, playerName, playerRealm = self:GetPlayerData(memberName);
+  if playerData then
+    frame.Logs:SetText(self:GetPlayerOverallPerformance(playerData, logTargets));
+  else
+    frame.Logs:SetText(self:GetColoredText("muted", "--"));
   end
 end
 
@@ -382,6 +499,29 @@ function LogTracker:GetPlayerData(playerFull, realmNameExplicit)
   return characterData, playerName, realmName;
 end
 
+function LogTracker:GetPlayerOverallPerformance(playerData, logTargets)
+  local logScoreValue = 0;
+  local logScoreCount = 0;
+  for zoneId, zoneData in pairs(playerData['performance']) do
+    for _, encounterData in ipairs(zoneData['encounters']) do
+      local targetEncounters = nil;
+      if logTargets and logTargets[zoneId] then
+        targetEncounters = logTargets[zoneId];
+      end
+      if not logTargets or (targetEncounters and tContains(targetEncounters, encounterData['encounter']['id'])) then
+        -- logTargets is either nil (include every encounter) or it contains the given encounter
+        logScoreValue = logScoreValue + encounterData['percentRank'];
+        logScoreCount = logScoreCount + 1;
+      end
+    end
+  end
+  if (logScoreCount > 0) then
+    return self:GetColoredPercent(logScoreValue / logScoreCount);
+  else
+    return self:GetColoredText("muted", "--");
+  end
+end
+
 function LogTracker:GetPlayerZonePerformance(zone, playerClass)
   local zoneName = zone.zoneName;
   local zoneProgress = self:GetColoredProgress(tonumber(zone.encountersKilled), tonumber(zone.zoneEncounters));
@@ -435,19 +575,21 @@ end
 
 function LogTracker:SetPlayerInfoTooltip(playerData, playerName, playerRealm, disableShiftNotice)
   for zoneIdSize, zone in pairs(playerData.performance) do
-    local zoneId, zoneSize = strsplit("-", zoneIdSize)
-    local zoneName, zoneProgress, zoneSpecs = self:GetPlayerZonePerformance(zone, playerData.class);
-    GameTooltip:AddDoubleLine(
-      zoneName.." "..zoneProgress, zoneSpecs,
-      1, 1, 1, 1, 1, 1
-    );
-    if IsShiftKeyDown() then
-      for _, encounter in ipairs(zone.encounters) do
-        local encounterName, encounterRating = self:GetPlayerEncounterPerformance(encounter, playerData.class, true);
-        GameTooltip:AddDoubleLine(
-          "  "..encounterName, encounterRating,
-          1, 1, 1, 1, 1, 1
-        );
+    local zoneId, zoneSize = strsplit("-", zoneIdSize);
+    if (zoneSize == "10" and not self.db.hide10Player) or (zoneSize == "25" and not self.db.hide25Player) then
+      local zoneName, zoneProgress, zoneSpecs = self:GetPlayerZonePerformance(zone, playerData.class);
+      GameTooltip:AddDoubleLine(
+        zoneName.." "..zoneProgress, zoneSpecs,
+        1, 1, 1, 1, 1, 1
+      );
+      if IsShiftKeyDown() then
+        for _, encounter in ipairs(zone.encounters) do
+          local encounterName, encounterRating = self:GetPlayerEncounterPerformance(encounter, playerData.class, true);
+          GameTooltip:AddDoubleLine(
+            "  "..encounterName, encounterRating,
+            1, 1, 1, 1, 1, 1
+          );
+        end
       end
     end
   end
