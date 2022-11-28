@@ -37,12 +37,6 @@ function LogTracker:Init()
       size = 10,
       encounters = { 772 }
     },
-    -- Ulduar 10-man
-    [1106] = {
-      zone = 0,
-      size = 10,
-      encounters = {}
-    },
     -- Naxxramas 25-man
     [1098] = {
       zone = 1015,
@@ -67,12 +61,6 @@ function LogTracker:Init()
       size = 25,
       encounters = { 772 }
     },
-    -- Ulduar 10-man
-    [1107] = {
-      zone = 0,
-      size = 25,
-      encounters = {}
-    },
   };
   self.db = CopyTable(self.defaults);
   self:LogDebug("Init");
@@ -87,6 +75,131 @@ function LogTracker:Init()
   end);
   GameTooltip:HookScript("OnShow", function(tooltip, ...)
     LogTracker:OnTooltipShow(tooltip, ...);
+  end);
+end
+
+function LogTracker:InitLogsFrame()
+  local urlRegion = "";
+  local urlRegionId = GetCurrentRegion();
+  if (urlRegionId == 1) then
+    urlRegion = "us";
+  elseif (urlRegionId == 2) then
+    urlRegion = "kr";
+  elseif (urlRegionId == 3) then
+    urlRegion = "eu";
+  elseif (urlRegionId == 4) then
+    urlRegion = "tw";
+  elseif (urlRegionId == 5) then
+    urlRegion = "ch";
+  end
+  local urlBase = "https://classic.warcraftlogs.com/character/"..urlRegion.."/"..strlower(GetRealmName()).."/";
+  self.warcraftlogsFrame = CreateFrame("Frame", nil, UIParent, "DialogBorderTemplate");
+  self.warcraftlogsFrame:ClearAllPoints();
+  self.warcraftlogsFrame:SetPoint("TOPLEFT", 50, -50);
+  self.warcraftlogsFrame:SetSize(160, 124);
+  self.warcraftlogsFrame:Hide();
+  self.warcraftlogsFrame.Title = self.warcraftlogsFrame:CreateFontString(nil, "ARTWORK", "GameFontNormal");
+  self.warcraftlogsFrame.Title:ClearAllPoints();
+  self.warcraftlogsFrame.Title:SetPoint("TOPLEFT", 18, -15);
+  self.warcraftlogsFrame.Title:SetText("WarcraftLogs");
+  self.warcraftlogsFrame.Title:SetTextColor(1, 1, 1);
+  self.warcraftlogsFrame.CharacterLabel = self.warcraftlogsFrame:CreateFontString(nil, "ARTWORK", "GameFontNormal");
+  self.warcraftlogsFrame.CharacterLabel:ClearAllPoints();
+  self.warcraftlogsFrame.CharacterLabel:SetPoint("TOPLEFT", 18, -35);
+  self.warcraftlogsFrame.CharacterLabel:SetText("Character");
+  self.warcraftlogsFrame.CharacterLabel:SetJustifyH("LEFT");
+  self.warcraftlogsFrame.CharacterDropdown = CreateFrame("Button", nil, self.warcraftlogsFrame, "UIDropDownMenuTemplate");
+  self.warcraftlogsFrame.CharacterDropdown:ClearAllPoints();
+  self.warcraftlogsFrame.CharacterDropdown:SetPoint("TOPLEFT", -4, -46);
+  self.warcraftlogsFrame.CharacterDropdown:SetPoint("TOPRIGHT", -18, -46);
+  self.warcraftlogsFrame.CharacterDropdown:SetScript("OnClick", function()
+    ToggleDropDownMenu(1, nil, self.warcraftlogsFrame.CharacterDropdown, self.warcraftlogsFrame.CharacterDropdown, 0, 0);
+  end);
+  self.warcraftlogsFrame.CharacterDropdown.values = {};
+  self.warcraftlogsFrame.CharacterName = self.warcraftlogsFrame:CreateFontString(nil, "ARTWORK", "GameFontNormal");
+  self.warcraftlogsFrame.CharacterName:ClearAllPoints();
+  self.warcraftlogsFrame.CharacterName:SetPoint("TOPLEFT", 18, -54);
+  self.warcraftlogsFrame.CharacterName:SetText("TODO");
+  self.warcraftlogsFrame.CharacterName:SetJustifyH("LEFT");
+  self.warcraftlogsFrame.UrlLabel = self.warcraftlogsFrame:CreateFontString(nil, "ARTWORK", "GameFontNormal");
+  self.warcraftlogsFrame.UrlLabel:ClearAllPoints();
+  self.warcraftlogsFrame.UrlLabel:SetPoint("TOPLEFT", 18, -75);
+  self.warcraftlogsFrame.UrlLabel:SetText("Profile URL");
+  self.warcraftlogsFrame.UrlLabel:SetJustifyH("LEFT");
+  self.warcraftlogsFrame.Url = CreateFrame("EditBox", nil, self.warcraftlogsFrame, "InputBoxTemplate");
+  self.warcraftlogsFrame.Url:ClearAllPoints();
+  self.warcraftlogsFrame.Url:SetAutoFocus(false);
+  self.warcraftlogsFrame.Url:SetPoint("TOPLEFT", 20, -88);
+  self.warcraftlogsFrame.Url:SetPoint("TOPRIGHT", -14, -88);
+  self.warcraftlogsFrame.Url:SetHeight(20);
+  self.warcraftlogsFrame.Url:SetText("TODO");
+  local characterDropdownClick = function(dropdown)
+    UIDropDownMenu_SetSelectedValue(dropdown.owner, dropdown.value);
+    self.warcraftlogsFrame.Url:SetText(urlBase..strlower(dropdown.value));
+  end
+  local characterDropdownInit = function(dropdown)
+		for i=1, #dropdown.values do
+      local info = UIDropDownMenu_CreateInfo();
+      info.text = dropdown.values[i].text;
+      info.value = dropdown.values[i].value;
+      info.owner = dropdown;
+      info.checked = UIDropDownMenu_GetSelectedValue(dropdown) == info.value;
+      info.func = characterDropdownClick;
+      UIDropDownMenu_AddButton(info);
+			if (info.checked) then
+				UIDropDownMenu_SetSelectedValue(dropdown, info.value);
+      end
+    end
+  end
+  UIDropDownMenu_Initialize(self.warcraftlogsFrame.CharacterDropdown, characterDropdownInit);
+  UIDropDownMenu_JustifyText(self.warcraftlogsFrame.CharacterDropdown, "LEFT");
+  LFGBrowseFrame:HookScript("OnShow", function()
+    self.warcraftlogsFrame:SetPoint("TOPLEFT", LFGBrowseFrame, "TOPRIGHT", -30, -10);
+  end);
+  LFGBrowseFrame:HookScript("OnHide", function()
+    self.warcraftlogsFrame:Hide();
+  end);
+  hooksecurefunc("LFGBrowseSearchEntry_OnClick", function(lfg, button)
+    local searchResultInfo = C_LFGList.GetSearchResultInfo(lfg.resultID);
+    local numMembers = searchResultInfo.numMembers;
+    if (numMembers > 1) then
+      -- Group
+      local selectedValue = nil;
+      wipe(self.warcraftlogsFrame.CharacterDropdown.values);
+      for i=1, numMembers do
+        local name, role, classFileName, className, level, isLeader = C_LFGList.GetSearchResultMemberInfo(lfg.resultID, i);
+        if name then
+          local classColor = RAID_CLASS_COLORS[classFileName];
+          tinsert(self.warcraftlogsFrame.CharacterDropdown.values, {
+            text = "|cff"..string.format("%02x%02x%02x", classColor.r*255, classColor.g*255, classColor.b*255)..name.."|r",
+            value = name
+          });
+          if isLeader then
+            selectedValue = name;
+          end
+        end
+      end
+      self.warcraftlogsFrame.CharacterName:Hide();
+      self.warcraftlogsFrame.CharacterDropdown:Show();
+      UIDropDownMenu_Initialize(self.warcraftlogsFrame.CharacterDropdown, characterDropdownInit);
+      if selectedValue then
+        UIDropDownMenu_SetSelectedValue(self.warcraftlogsFrame.CharacterDropdown, selectedValue);
+        self.warcraftlogsFrame.Url:SetText(urlBase..strlower(selectedValue));
+      end
+      self.warcraftlogsFrame:Show();
+    elseif (numMembers == 1) then
+      -- Player
+      local name, role, classFileName, className, level, areaName, soloRoleTank, soloRoleHealer, soloRoleDPS = C_LFGList.GetSearchResultLeaderInfo(lfg.resultID);
+      local classColor = RAID_CLASS_COLORS[classFileName];
+      self.warcraftlogsFrame.CharacterName:SetTextColor(classColor.r, classColor.g, classColor.b);
+      self.warcraftlogsFrame.CharacterName:SetText(name);
+      self.warcraftlogsFrame.CharacterName:Show();
+      self.warcraftlogsFrame.Url:SetText(urlBase..strlower(name));
+      self.warcraftlogsFrame.CharacterDropdown:Hide();
+      self.warcraftlogsFrame:Show();
+    else
+      self.warcraftlogsFrame:Hide();
+    end
   end);
 end
 
@@ -189,6 +302,8 @@ function LogTracker:OnEvent(event, ...)
     if TacoTipConfig and not TacoTipConfig.show_guild_name then
       print(self:GetColoredText("error", L["TACOTIP_GUILD_NAME_WARNING"]));
     end
+    -- Hook into Group finder frame
+    LogTracker:InitLogsFrame();
     -- Hook into Group finder tooltip
     if LFGBrowseSearchEntryTooltip then
       hooksecurefunc("LFGBrowseSearchEntryTooltip_UpdateAndShow", function(tooltip, ...)
