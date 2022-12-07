@@ -255,6 +255,16 @@ function LogTracker:InitOptions()
 		self.db.hide25Player = self.optionHide25Player:GetChecked();
 	end)
 	self.optionHide25Player:SetChecked(self.db.hide25Player);
+
+
+	--show VOA logs
+	self.optionHideVOA = CreateFrame("CheckButton", nil, self.optionsPanel, "InterfaceOptionsCheckButtonTemplate");
+    self.optionHideVOA:SetPoint("TOPLEFT", 20, -140);
+    self.optionHideVOA.Text:SetText(L["OPTION_HIDE_VOA"]);
+    self.optionHideVOA:SetScript("OnClick", function(_, value)
+    	self.db.hideVOA = self.optionHideVOA:GetChecked();
+    end)
+    self.optionHideVOA:SetChecked(self.db.hideVOA);
 end
 
 function LogTracker:LogOutput(...)
@@ -710,19 +720,21 @@ function LogTracker:SetPlayerInfoTooltip(playerData, playerName, playerRealm, di
   for zoneIdSize, zone in pairs(playerData.performance) do
     local zoneId, zoneSize = strsplit("-", zoneIdSize);
     if (zoneSize == "10" and not self.db.hide10Player) or (zoneSize == "25" and not self.db.hide25Player) then
-      local zoneName, zoneProgress, zoneSpecs = self:GetPlayerZonePerformance(zone, playerData.class);
-      GameTooltip:AddDoubleLine(
-        zoneName.." "..zoneProgress, zoneSpecs,
-        1, 1, 1, 1, 1, 1
-      );
-      if IsShiftKeyDown() then
-        for _, encounter in ipairs(zone.encounters) do
-          local encounterName, encounterRating = self:GetPlayerEncounterPerformance(encounter, playerData.class, true);
+        if (zoneId ~= "1016" or not self.db.hideVOA) then
+          local zoneName, zoneProgress, zoneSpecs = self:GetPlayerZonePerformance(zone, playerData.class);
           GameTooltip:AddDoubleLine(
-            "  "..encounterName, encounterRating,
+            zoneName.." "..zoneProgress, zoneSpecs,
             1, 1, 1, 1, 1, 1
           );
-        end
+          if IsShiftKeyDown() then
+            for _, encounter in ipairs(zone.encounters) do
+              local encounterName, encounterRating = self:GetPlayerEncounterPerformance(encounter, playerData.class, true);
+              GameTooltip:AddDoubleLine(
+                "  "..encounterName, encounterRating,
+                1, 1, 1, 1, 1, 1
+              );
+            end
+         end
       end
     end
   end
