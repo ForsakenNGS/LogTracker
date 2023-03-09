@@ -6,6 +6,7 @@ local syncInterval = 5;                -- 5 seconds
 local syncHistoryUpdates = 300;        -- 5 minutes
 local syncHistoryCount = 50;           -- Keep up to 50 players in the "recently updated" list for sync between logins
 local syncPeerGreeting = 60;           -- 1 minute
+local syncPeerTimeout = 300;           -- 5 minutes
 local syncPeerUpdates = 1800;          -- 30 minutes
 local syncBatchPlayers = 20;           -- Sync up to 20 players per batch
 local syncRequestLimit = 30;           -- Keep up to 30 players in a request list (to retrieve missing data from other clients)
@@ -29,13 +30,15 @@ function LogTracker:Init()
     guild = 0,
     party = 0,
     raid = 0,
+    whisper = 0,
     timer = GetTime(),
     peers = {},
     peersUpdate = GetTime(),
     peersChannel = {
       guild = GetTime(),
       party = GetTime(),
-      raid = GetTime()
+      raid = GetTime(),
+      yell = GetTime()
     },
     players = {},
     requests = {},
@@ -816,6 +819,8 @@ function LogTracker:OnInspectAchievements(playerGuid)
   if not tContains(self.syncStatus.players, playerName) then
     tinsert(self.syncStatus.players, playerName);
   end
+  -- Remove from request list if present
+  self:SyncRequestRemove(playerName);
   --self:LogDebug("Updated achievements for ", playerName);
   self:SyncCheck();
   -- Clear unit / guid for inspect
@@ -1291,6 +1296,7 @@ function LogTracker:GetSyncPeer(name, noUpdate, noCreate)
     isGuild = false,
     isParty = false,
     isRaid = false,
+    isWhisper = false,
     receivedOverall = 0,
     receivedUpdates = 0,
     sentOverall = 0
@@ -1367,14 +1373,15 @@ function LogTracker:SyncCheck()
   self.syncStatus.throttleTimer = now + syncThrottle;
   local chatBandwidth = ChatThrottleLib:UpdateAvail();
   if chatBandwidth < 3000 then
-    self:LogDebug("SyncPeers", "Chad bandwidth limited, skipping sync for now.", chatBandwidth);
+    self:LogDebug("SyncPeers", "Chat bandwidth limited, skipping sync for now.", chatBandwidth);
     return;
   end
+  self:SyncSendHello("YELL");
   if self.syncStatus.peersUpdate < now then
     -- Update sync list (Every 30 minutes one full update)
     self.syncStatus.peersUpdate = now + syncPeerUpdates;
-    local guild, party, raid = self:SyncUpdateFull();
-    self:LogDebug("SyncPeers", "Updated available peers", "Guild: " .. guild, "Party: " .. party, "Raid: " .. raid);
+    local guild, party, raid, whisper = self:SyncUpdateFull();
+    self:LogDebug("SyncPeers", "Updated available peers", "Guild: " .. guild, "Party: " .. party, "Raid: " .. raid, "Whisper: " .. whisper);
     return;
   end
   if self.syncStatus.historyUpdate < now then
@@ -1402,17 +1409,26 @@ function LogTracker:SyncCheck()
       namesLimit = 251 - strlen(addonPrefix) - strlen(namesList);
       i = i + 1;
     end
-    self:LogDebug("Requesting Sync for ", i, " players");
     --self:LogDebug("Request", namesList);
-    local guild, party, raid = self:SyncUpdateFull();
-    if (guild > 0) then
+    local guild, party, raid, whisper = self:SyncUpdateFull();
+    if (guild + party + raid + whisper) > 0 then
+      self:LogDebug("Requesting Sync for ", i, " players");
+    end
+    if guild > 0 then
       self:SendAddonMessage("rq", namesList, "GUILD");
     end
-    if (party > 0) then
+    if party > 0 then
       self:SendAddonMessage("rq", namesList, "PARTY");
     end
-    if (raid > 0) then
+    if raid > 0 then
       self:SendAddonMessage("rq", namesList, "RAID");
+    end
+    if whisper > 0 then
+      for name, peer in pairs(self.syncStatus.peers) do
+        if peer.isWhisper then
+          self:SendAddonMessage("rq", namesList, "WHISPER", name);
+        end
+      end
     end
     -- Clear request list and timer
     local ratio = 1 - i / syncRequestLimit;
@@ -1448,6 +1464,18 @@ function LogTracker:SyncCheck()
         self:LogDebug("Sync", raidPeers, "Raid", offset, "/", playerCount, " (" .. sent .. ")");
         return;
       end
+      -- Check whisper
+      local whisperPeers, whisperOffset = self:SyncUpdateWhisper();
+      if whisperPeers > 0 and whisperOffset < playerCount then
+        for name, peer in pairs(self.syncStatus.peers) do
+          if peer.isWhisper and peer.syncOffset < playerCount then
+            local offset, sent = self:SyncSend("RAID", nil, peer.syncOffset, syncBatchPlayers);
+            peer.syncOffset = offset;
+            self:LogDebug("Sync", peer.name, "Whisper", offset, "/", playerCount, " (" .. sent .. ")");
+            return;
+          end
+        end
+      end
     end
   end
   self:SyncReportPeers();
@@ -1457,7 +1485,8 @@ function LogTracker:SyncUpdateFull()
   local guild = self:SyncUpdateGuild();
   local party = self:SyncUpdateParty();
   local raid = self:SyncUpdateRaid();
-  return guild, party, raid;
+  local whisper = self:SyncUpdateWhisper();
+  return guild, party, raid, whisper;
 end
 
 function LogTracker:SyncUpdateGuild()
@@ -1570,6 +1599,31 @@ function LogTracker:SyncUpdateRaid()
   return peers, self.syncStatus.raid;
 end
 
+function LogTracker:SyncUpdateWhisper()
+  local peers = 0;
+  for name, peer in pairs(self.syncStatus.peers) do
+    -- Update online status
+    if peer.isOnline then
+      local peerAge = GetTime() - peer.lastSeen;
+      if peerAge > syncPeerTimeout then
+        peer.isOnline = false;
+      end
+    end
+    -- Check if peer should sync via whisper
+    if peer.isOnline and not peer.isGuild and not peer.isParty and not peer.isRaid and peer.syncOffset < playerCount then
+      peer.isWhisper = true;
+      self.syncStatus.whisper = min(self.syncStatus.whisper, peer.syncOffset);
+      peers = peers + 1;
+    else
+      peer.isWhisper = false;
+    end
+  end
+  if peers == 0 then
+    self.syncStatus.whisper = 0;
+  end
+  return peers, self.syncStatus.whisper;
+end
+
 function LogTracker:SyncRequest(name)
   -- Check if user is already in the request list
   local requestIndex = nil;
@@ -1589,6 +1643,23 @@ function LogTracker:SyncRequest(name)
   end
   -- Prepend requested player
   tinsert(self.syncStatus.requests, 1, name);
+end
+
+function LogTracker:SyncRequestRemove(name)
+  -- Check if user is already in the request list
+  local requestIndex = nil;
+  for i, requestName in ipairs(self.syncStatus.requests) do
+    if requestName == name then
+      requestIndex = i;
+      break;
+    end
+  end
+  -- Remove existing entry if present (will be prepended)
+  if requestIndex ~= nil then
+    tremove(self.syncStatus.requests, requestIndex);
+    return true;
+  end
+  return false;
 end
 
 function LogTracker:SyncSend(type, target, offset, limit)
@@ -1628,6 +1699,9 @@ function LogTracker:SyncSendHello(channel, target)
     self:SendAddonMessage("hi", nil, channel, target);
   elseif (channel == "RAID") and (self.syncStatus.peersChannel.raid < now) then
     self.syncStatus.peersChannel.raid = now + syncPeerGreeting;
+    self:SendAddonMessage("hi", nil, channel, target);
+  elseif (channel == "YELL") and (self.syncStatus.peersChannel.yell < now) then
+    self.syncStatus.peersChannel.yell = now + syncPeerGreeting;
     self:SendAddonMessage("hi", nil, channel, target);
   end
 end
