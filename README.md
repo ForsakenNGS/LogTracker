@@ -1,25 +1,19 @@
 # LogTracker (TBC Classic) by Mylaerla-Everlook
 
-Provides the current warcraftlogs rankings for players within the game.
-Currently those are displayed for:
-- Player-Tooltips (mouseover)
-- Chat /who links (shift-click name)
-- Online alerts (guild/friends)
-- Manual player lookup
+Due to legal reasons I currently can't read the log data as before.
+There will be an update in the future, but that will still take some time which I can't speed up. 
+Until then I implemented an alternative for checking a players capabilities:
+- Links to a players logs as URL for Copy&Paste within the LFG-Tool
+- Player-Tooltip with the raid progression (kills + hardmodes) displayed for:
+  - Player-Tooltips (mouseover)
+  - Chat /who links (shift-click name)
+  - Online alerts (guild/friends)
+  - Manual player lookup
 
-With the command `/lt <playername>` you can manually lookup a players logs,
+With the command `/lt <playername>` you can manually lookup a players raid progression,
 which will also include the details for individual encounters.
-
-The tooltip / description contains the up-to-date content (currently BT/Hyjal and ZA)
-with the number of killed/total bosses and the allstars rating for each spec.
 
 Player log data is stored within a separate data plugin split by region:
 - `LogTracker_BaseData` (Contains the current phases and server <-> region mappings)
-- `LogTracker_CharacterData_EU` (Player data for Europe-Servers)
-- `LogTracker_CharacterData_US` (Player data for US-Servers)
-- `LogTracker_CharacterData_CN` (Player data for China-Servers)
-- `LogTracker_CharacterData_KR` (Player data for Korean-Servers)
-- `LogTracker_CharacterData_TW` (Player data for Taiwan-Servers)
 
-In order for the Addon to work (properly) you will (in addition to this addon)
-need the `LogTracker_BaseData` and the `LogTracker_CharacterData_*` of your respective region(s).
+In order for the Addon to work (properly) you will (in addition to this addon) need the `LogTracker_BaseData` addon.
