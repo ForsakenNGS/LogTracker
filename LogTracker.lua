@@ -677,10 +677,11 @@ function LogTracker:OnChatMsgAddon(prefix, message, source, sender)
           playerData = { encounters = {}, lastUpdate = lastUpdate - 1 };
         end
         if (playerData.lastUpdate < lastUpdate) then
-          playerDetails.level = level;
-          playerDetails.faction = faction;
-          playerDetails.class = class;
-          playerDetails.lastUpdate = lastUpdate;
+          playerData.level = level;
+          playerData.faction = faction;
+          playerData.class = class;
+          playerData.lastUpdate = lastUpdate;
+          playerData.syncFrom = syncName;
           self.db.playerData[realmName][name] = playerData;
           peer.receivedUpdates = peer.receivedUpdates + 1;
         end
@@ -691,7 +692,7 @@ function LogTracker:OnChatMsgAddon(prefix, message, source, sender)
       if data then
         local name, zoneId, encouterData = strsplit("#", data);
         local playerData = self.db.playerData[realmName][name];
-        if playerData then
+        if playerData and playerData.syncFrom and playerData.syncFrom == syncName then
           playerData.encounters[zoneId] = encouterData;
         end
       end
