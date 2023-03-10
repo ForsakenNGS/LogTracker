@@ -945,7 +945,7 @@ function LogTracker:OnTooltipShow_LFGPlayer(tooltip, resultID)
     self:OnTooltipShow_LFGMember(frame, logTargets);
   end
   -- Increase width to prevent overlap
-  tooltip:SetWidth(tooltip:GetWidth() + 32);
+  tooltip:SetWidth(tooltip:GetWidth() + 110);
 end
 
 function LogTracker:OnTooltipShow_LFGMember(frame, logTargets)
@@ -1230,11 +1230,28 @@ function LogTracker:GetPlayerData(playerFull, realmNameExplicit)
 end
 
 function LogTracker:GetPlayerOverallPerformance(playerData, logTargets)
+  local progression = "";
+  for zoneIdSize, zoneData in pairs(playerData['performance']) do
+    local zoneId, zoneSize = strsplit("-", zoneIdSize);
+    if progression ~= "" then
+      progression = progression .. self:GetColoredText("muted", " / ");
+    end
+    local hardmodes = (zoneData['hardmodes'] or 0);
+    if hardmodes > 0 then
+      progression = progression .. zoneSize .. " " .. self:GetColoredText("hardmode4", hardmodes .. "HM");
+    end
+  end
+  if (progression ~= "") then
+    return progression;
+  else
+    return self:GetColoredText("muted", "--");
+  end
+  --[[
   local logScoreValue = 0;
   local logScoreCount = 0;
   for zoneId, zoneData in pairs(playerData['performance']) do
     for _, encounterData in ipairs(zoneData['encounters']) do
-      local targetEncounters = nil;
+      local targetEncounters = nil;      
       if logTargets and logTargets[zoneId] then
         targetEncounters = logTargets[zoneId];
       end
@@ -1250,6 +1267,7 @@ function LogTracker:GetPlayerOverallPerformance(playerData, logTargets)
   else
     return self:GetColoredText("muted", "--");
   end
+  --]]
 end
 
 function LogTracker:GetPlayerZonePerformance(zone, playerClass)
