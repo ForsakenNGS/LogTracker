@@ -1,4 +1,4 @@
-# LogTracker (TBC Classic) by Mylaerla-Everlook
+# LogTracker (WotLK Classic) by Mylaerla-Everlook
 
 Due to legal reasons I currently can't read the log data as before.
 There will be an update in the future, but that will still take some time which I can't speed up. 
@@ -12,8 +12,5 @@ Until then I implemented an alternative for checking a players capabilities:
 
 With the command `/lt <playername>` you can manually lookup a players raid progression,
 which will also include the details for individual encounters.
-
-Player log data is stored within a separate data plugin split by region:
-- `LogTracker_BaseData` (Contains the current phases and server <-> region mappings)
 
 In order for the Addon to work (properly) you will (in addition to this addon) need the `LogTracker_BaseData` addon.

@@ -5,6 +5,7 @@ local syncThrottle = 2;                -- 2 seconds
 local syncInterval = 5;                -- 5 seconds
 local syncHistoryUpdates = 300;        -- 5 minutes
 local syncHistoryCount = 50;           -- Keep up to 50 players in the "recently updated" list for sync between logins
+local syncHistoryLimit = 300;          -- Do not sync more than 300 players to new peers
 local syncPeerGreeting = 60;           -- 1 minute
 local syncPeerTimeout = 300;           -- 5 minutes
 local syncPeerUpdates = 1800;          -- 30 minutes
@@ -31,6 +32,7 @@ function LogTracker:Init()
     party = 0,
     raid = 0,
     whisper = 0,
+    offsetStart = 0,
     timer = GetTime(),
     peers = {},
     peersUpdate = GetTime(),
@@ -38,7 +40,8 @@ function LogTracker:Init()
       guild = GetTime(),
       party = GetTime(),
       raid = GetTime(),
-      yell = GetTime()
+      yell = GetTime(),
+      whisper = {}
     },
     players = {},
     requests = {},
@@ -274,6 +277,7 @@ function LogTracker:Init()
   self:RegisterEvent("GUILD_ROSTER_UPDATE");
   self:RegisterEvent("GROUP_ROSTER_UPDATE");
   self:RegisterEvent("RAID_ROSTER_UPDATE");
+  self:RegisterEvent("FRIENDLIST_UPDATE");
   self:RegisterEvent("UPDATE_MOUSEOVER_UNIT");
   GameTooltip:HookScript("OnTooltipSetUnit", function(tooltip, ...)
     LogTracker:OnTooltipSetUnit(tooltip, ...);
@@ -593,6 +597,8 @@ function LogTracker:OnEvent(event, ...)
     self:OnGroupRosterUpdate(...);
   elseif (event == "RAID_ROSTER_UPDATE") then
     self:OnRaidRosterUpdate(...);
+  elseif (event == "FRIENDLIST_UPDATE") then
+    self:OnFriendlistUpdate(...);
   elseif (event == "PLAYER_ENTERING_WORLD") then
     -- Cleanup player data
     self:CleanupPlayerData();
@@ -820,6 +826,9 @@ function LogTracker:OnInspectAchievements(playerGuid)
   if not tContains(self.syncStatus.players, playerName) then
     tinsert(self.syncStatus.players, playerName);
   end
+  if #(self.syncStatus.players) > syncHistoryLimit then
+    self.syncStatus.offsetStart = syncHistoryLimit - #(self.syncStatus.players);
+  end
   -- Remove from request list if present
   self:SyncRequestRemove(playerName);
   --self:LogDebug("Updated achievements for ", playerName);
@@ -857,6 +866,11 @@ end
 
 function LogTracker:OnRaidRosterUpdate()
   self:SyncUpdateRaid();
+  self:SyncCheck();
+end
+
+function LogTracker:OnFriendlistUpdate()
+  self:SyncUpdateWhisper();
   self:SyncCheck();
 end
 
@@ -1292,7 +1306,7 @@ function LogTracker:GetSyncPeer(name, noUpdate, noCreate)
     chatReported = false,
     lastReport = GetTime(),
     lastSeen = 0,
-    syncOffset = 0,
+    syncOffset = self.syncStatus.offsetStart,
     isOnline = false,
     isGuild = false,
     isParty = false,
@@ -1470,9 +1484,9 @@ function LogTracker:SyncCheck()
       if whisperPeers > 0 and whisperOffset < playerCount then
         for name, peer in pairs(self.syncStatus.peers) do
           if peer.isWhisper and peer.syncOffset < playerCount then
-            local offset, sent = self:SyncSend("RAID", nil, peer.syncOffset, syncBatchPlayers);
+            local offset, sent = self:SyncSend("WHISPER", name, peer.syncOffset, syncBatchPlayers);
             peer.syncOffset = offset;
-            self:LogDebug("Sync", peer.name, "Whisper", offset, "/", playerCount, " (" .. sent .. ")");
+            self:LogDebug("Sync", name, "Whisper", offset, "/", playerCount, " (" .. sent .. ")");
             return;
           end
         end
@@ -1602,6 +1616,15 @@ end
 
 function LogTracker:SyncUpdateWhisper()
   local peers = 0;
+  -- Check peers from friends list
+  local friends = C_FriendList.GetNumFriends();
+  for i = 1, friends do
+    local friendInfo = C_FriendList.GetFriendInfoByIndex(i);
+    if friendInfo.connected then
+      local peer = self:GetSyncPeer(friendInfo.name, false, true);
+      self:SyncSendHello("WHISPER", friendInfo.name);
+    end
+  end
   for name, peer in pairs(self.syncStatus.peers) do
     -- Update online status
     if peer.isOnline then
@@ -1611,7 +1634,7 @@ function LogTracker:SyncUpdateWhisper()
       end
     end
     -- Check if peer should sync via whisper
-    if peer.isOnline and not peer.isGuild and not peer.isParty and not peer.isRaid and peer.syncOffset < playerCount then
+    if peer.isOnline and not peer.isGuild and not peer.isParty and not peer.isRaid then
       peer.isWhisper = true;
       self.syncStatus.whisper = min(self.syncStatus.whisper, peer.syncOffset);
       peers = peers + 1;
@@ -1704,6 +1727,12 @@ function LogTracker:SyncSendHello(channel, target)
   elseif (channel == "YELL") and (self.syncStatus.peersChannel.yell < now) then
     self.syncStatus.peersChannel.yell = now + syncPeerGreeting;
     self:SendAddonMessage("hi", nil, channel, target);
+  elseif (channel == "WHISPER") then
+    local lastHello = self.syncStatus.peersChannel.whisper[target];
+    if not lastHello or (lastHello < now) then
+      self.syncStatus.peersChannel.whisper[target] = now + syncPeerGreeting;
+      self:SendAddonMessage("hi", nil, channel, target);
+    end
   end
 end
 
