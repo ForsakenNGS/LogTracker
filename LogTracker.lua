@@ -1,5 +1,6 @@
 local _, L = ...;
 local addonPrefix = "LTSY";
+local dbVersion = 1;
 local syncVersion = 1;
 local startupDelay = 60;               -- 1 minute
 local syncThrottle = 2;                -- 2 seconds
@@ -674,7 +675,14 @@ function LogTracker:OnAddonLoaded(addonName)
   end
   LogTrackerDB = LogTrackerDB or self.db;
   self.db = LogTrackerDB;
-  self.db.playerData = self.db.playerData or {};
+  self.db.version = self.db.version or 0;
+  if self.db.version < dbVersion then
+    self.db.playerData = {};
+    self.db.syncHistory = {};
+    self.db.version = dbVersion;
+  else
+    self.db.playerData = self.db.playerData or {};
+  end
   if self.db.syncHistory then
     self.syncStatus.players = { unpack(self.db.syncHistory) };
   else
