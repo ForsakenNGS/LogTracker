@@ -1,5 +1,6 @@
 local _, L = ...;
 local addonPrefix = "LTSY";
+local syncVersion = 1;
 local startupDelay = 60;               -- 1 minute
 local syncThrottle = 2;                -- 2 seconds
 local syncInterval = 5;                -- 5 seconds
@@ -45,7 +46,9 @@ function LogTracker:Init()
     },
     players = {},
     requests = {},
+    requestsLogs = {},
     requestsLock = {},
+    requestsLockLogs = {},
     requestsTimer = GetTime(),
     historyUpdate = GetTime(),
     messages = {},
@@ -485,7 +488,34 @@ function LogTracker:LogDebug(...)
   end
 end
 
+function LogTracker:StringifyData(data, glueOuter, glueInner)
+  glueOuter = glueOuter or "|";
+  glueInner = glueInner or ",";
+  local dataStr = {};
+  for _, values in ipairs(data) do
+    tinsert(dataStr, strjoin(glueInner, unpack(values)));
+  end
+  return strjoin(glueOuter, unpack(dataStr));
+end
+
+function LogTracker:UnstringifyData(dataStr, glueOuter, glueInner)
+  glueOuter = glueOuter or "|";
+  glueInner = glueInner or ",";
+  local data = {};
+  local dataRaw = { strsplit(glueOuter, dataStr) };
+  for _, valuesStr in ipairs(dataRaw) do
+    tinsert(data, { strsplit(glueInner,valuesStr) });
+  end
+  return data;
+end
+
 function LogTracker:SendAddonMessage(action, data, type, target, prio)
+  if type == "WHISPER" then
+    local peer = self:GetSyncPeer(target, true, true);
+    if peer and not peer.isOnline then
+      return;
+    end
+  end
   local message = action;
   if data ~= nil then
     message = message .. "|" .. data;
@@ -508,15 +538,23 @@ function LogTracker:QueueAddonMessage(action, data)
   end
 end
 
-function LogTracker:QueuePlayerData(name)
+function LogTracker:QueuePlayerData(name, requireLogs)
   local realmName = GetRealmName();
   local playerData = self.db.playerData[realmName][name];
-  if playerData then
-    local message = name ..
-    "#" .. playerData.level .. "#" .. playerData.faction .. "#" .. playerData.class .. "#" .. playerData.lastUpdate;
+  if playerData and (playerData.logs or not requireLogs) then
+    local message = name .. "#" .. playerData.level .. "#" .. playerData.faction .. "#" .. playerData.class .. "#" .. playerData.lastUpdate .. "#" .. syncVersion;
     self:QueueAddonMessage("pl", message);
-    for zoneId, encounterData in pairs(playerData.encounters) do
-      self:QueueAddonMessage("plE", name .. "#" .. zoneId .. "#" .. encounterData);
+    if playerData.logs then
+      for zoneId, logData in pairs(playerData.logs) do
+        local allstarsData = self:StringifyData(self:UnstringifyData(logData[3]), "/");
+        local encounterData = self:StringifyData(self:UnstringifyData(logData[4]), "/");
+        -- playerName#zoneId#ecounters#encountersKilled#allstarsData#encounterData
+        self:QueueAddonMessage("plL", name .. "#" .. zoneId .. "#" .. logData[1] .. "#" .. logData[2] .. "#" .. allstarsData .. "#" .. encounterData);
+      end
+    else
+      for zoneId, encounterData in pairs(playerData.encounters) do
+        self:QueueAddonMessage("plE", name .. "#" .. zoneId .. "#" .. encounterData);
+      end
     end
     return true;
   end
@@ -602,6 +640,8 @@ function LogTracker:OnEvent(event, ...)
   elseif (event == "PLAYER_ENTERING_WORLD") then
     -- Cleanup player data
     self:CleanupPlayerData();
+    -- Import app data
+    self:ImportAppData();
     -- Workaround for misaligned tooltip
     if TacoTipConfig and not TacoTipConfig.show_guild_name then
       print(self:GetColoredText("error", L["TACOTIP_GUILD_NAME_WARNING"]));
@@ -675,7 +715,7 @@ function LogTracker:OnChatMsgAddon(prefix, message, source, sender)
       -- Player base data
       local data = tremove(parts, 1);
       if data then
-        local name, level, faction, class, lastUpdate = strsplit("#", data);
+        local name, level, faction, class, lastUpdate, peerSyncVersion = strsplit("#", data);
         lastUpdate = tonumber(lastUpdate);
         local playerData = self.db.playerData[realmName][name];
         peer.receivedOverall = peer.receivedOverall + 1;
@@ -685,7 +725,14 @@ function LogTracker:OnChatMsgAddon(prefix, message, source, sender)
         if (playerData.lastUpdate < lastUpdate) then
           playerData.level = level;
           playerData.faction = faction;
-          playerData.class = class;
+          playerData.lastUpdate = lastUpdate;
+          playerData.syncFrom = syncName;
+          if not playerData.class or (peerSyncVersion and tonumber(peerSyncVersion) >= 1) then
+            playerData.class = class;
+          end
+          self.db.playerData[realmName][name] = playerData;
+          peer.receivedUpdates = peer.receivedUpdates + 1;
+        elseif not playerData.lastUpdateLogs or (playerData.lastUpdateLogs < lastUpdate) then
           playerData.lastUpdate = lastUpdate;
           playerData.syncFrom = syncName;
           self.db.playerData[realmName][name] = playerData;
@@ -699,7 +746,26 @@ function LogTracker:OnChatMsgAddon(prefix, message, source, sender)
         local name, zoneId, encouterData = strsplit("#", data);
         local playerData = self.db.playerData[realmName][name];
         if playerData and playerData.syncFrom and playerData.syncFrom == syncName then
+          if not playerData.encounters then
+            playerData.encounters = {};
+          end
           playerData.encounters[zoneId] = encouterData;
+        end
+      end
+    elseif action == "plL" then
+      -- Player encounter data
+      local data = tremove(parts, 1);
+      if data then
+        local name, zoneId, encounters, encountersKilled, allstarDataStr, encounterDataStr = strsplit("#", data);
+        local playerData = self.db.playerData[realmName][name];
+        if playerData and playerData.syncFrom and playerData.syncFrom == syncName then
+          allstarDataStr = self:StringifyData(self:UnstringifyData(allstarDataStr, "/"));
+          encounterDataStr = self:StringifyData(self:UnstringifyData(encounterDataStr, "/"));
+          if not playerData.logs then
+            playerData.logs = {};
+          end
+          playerData.logs[zoneId] = { encounters, encountersKilled, allstarDataStr, encounterDataStr };
+          playerData.lastUpdateLogs = playerData.lastUpdate;
         end
       end
     elseif action == "rq" then
@@ -719,9 +785,30 @@ function LogTracker:OnChatMsgAddon(prefix, message, source, sender)
           target = sender;
         end
         self:FlushAddonMessages(source, target);
-        self:LogDebug("Sync Request", syncName, "Sent " .. amount .. " players");
+        self:LogDebug("Sync Request (base)", syncName, "Sent " .. amount .. " players");
       else
-        self:LogDebug("Sync Request", syncName, "None available! (" .. #(names) .. " requested)");
+        self:LogDebug("Sync Request (base)", syncName, "None available! (" .. #(names) .. " requested)");
+      end
+    elseif action == "rqL" then
+      -- Request for player logs
+      local data = tremove(parts, 1);
+      local names = { strsplit("#", data) };
+      local amount = 0;
+      for _, name in ipairs(names) do
+        if not self.syncStatus.requestsLockLogs[name] and self:QueuePlayerData(name, true) then
+          self.syncStatus.requestsLockLogs[name] = true;
+          amount = amount + 1;
+        end
+      end
+      if amount > 0 then
+        local target = nil;
+        if source == "WHISPER" then
+          target = sender;
+        end
+        self:FlushAddonMessages(source, target);
+        self:LogDebug("Sync Request (logs)", syncName, "Sent " .. amount .. " players");
+      else
+        self:LogDebug("Sync Request (logs)", syncName, "None available! (" .. #(names) .. " requested)");
       end
     end
     peer.chatReported = false;
@@ -740,6 +827,14 @@ end
 function LogTracker:OnChatMsgSystem(text)
   if not self.db.chatExtension then
     return;
+  end
+  local offlineMatch = strmatch("No player named 'test' is currently playing.", gsub(ERR_CHAT_PLAYER_NOT_FOUND_S, "%%s", "(.+)"));
+  if offlineMatch then
+    local offlineName = offlineMatch[1];
+    local peer = self:GetSyncPeer(offlineName, true, true);
+    if peer then
+      peer.isOnline = false;
+    end
   end
   local _, _, name, linkText = string.find(text, "|Hplayer:([^:]*)|h%[([^%[%]]*)%]?|h");
   if name then
@@ -823,12 +918,7 @@ function LogTracker:OnInspectAchievements(playerGuid)
     end
   end
   self.db.playerData[realmName][playerName] = playerDetails;
-  if not tContains(self.syncStatus.players, playerName) then
-    tinsert(self.syncStatus.players, playerName);
-  end
-  if #(self.syncStatus.players) > syncHistoryLimit then
-    self.syncStatus.offsetStart = syncHistoryLimit - #(self.syncStatus.players);
-  end
+  self:SyncPlayerAdd(playerName);
   -- Remove from request list if present
   self:SyncRequestRemove(playerName);
   --self:LogDebug("Updated achievements for ", playerName);
@@ -1096,6 +1186,63 @@ function LogTracker:GetPlayerData(playerFull, realmNameExplicit)
   self.db.playerData[realmName] = self.db.playerData[realmName] or {};
   local playerDataRaw = self.db.playerData[realmName][playerName];
   if playerDataRaw then
+    if playerDataRaw.logs then
+      -- Read actual log data
+      local logData = playerDataRaw.logs;
+      local characterPerformance = {};
+      for zoneIdSize, zonePerformance in pairs(logData) do
+        local zoneId, zoneSize = strsplit("-", zoneIdSize);
+        zoneId = tonumber(zoneId);
+        zoneSize = tonumber(zoneSize);
+        -- Zone name
+        local zoneName = "Unknown ("..zoneSize..")";
+        if LogTracker_BaseData.zoneNames and LogTracker_BaseData.zoneNames[zoneId] then
+          zoneName = LogTracker_BaseData.zoneNames[zoneId]['name'].." ("..zoneSize..")";
+        end
+        -- Allstars rankings
+        local zoneAllstars = {};
+        local zoneAllstarsRaw = self:UnstringifyData(zonePerformance[3]);
+        for _, zoneAllstarsEntry in ipairs(zoneAllstarsRaw) do
+          tinsert(zoneAllstars, {
+            ['spec'] = tonumber(zoneAllstarsEntry[1]),
+            ['percentRank'] = zoneAllstarsEntry[2]
+          });
+        end
+        -- Encounters
+        local zoneEncounters = {};
+        if zonePerformance[4] ~= "" then
+          local zoneEncountersRaw = self:UnstringifyData(zonePerformance[4]);
+          for zoneEncounterIndex, zoneEncountersEntry in ipairs(zoneEncountersRaw) do
+            tinsert(zoneEncounters, {
+              ['spec'] = tonumber(zoneEncountersEntry[1] or 0),
+              ['encounter'] = LogTracker_BaseData.zoneEncounters[zoneId][zoneEncounterIndex],
+              ['percentRank'] = zoneEncountersEntry[2] or 0,
+              ['percentMedian'] = zoneEncountersEntry[3] or 0
+            });
+          end
+        end
+        -- Zone details
+        characterPerformance[zoneIdSize] = {
+          ['zoneName'] = zoneName,
+          ['zoneEncounters'] = zonePerformance[1],
+          ['encountersKilled'] = zonePerformance[2],
+          ['allstars'] = zoneAllstars,
+          ['encounters'] = zoneEncounters
+        }
+      end
+      -- Character details
+      characterData = {
+        ['level'] = playerDataRaw.level,
+        ['faction'] = playerDataRaw.faction,
+        ['class'] = tonumber(playerDataRaw.class),
+        ['last_update'] = playerDataRaw.lastUpdate,
+        ['logs'] = characterPerformance,
+      };
+      return characterData, playerName, realmName;
+    else
+      self:SyncRequestLogs(playerName);
+    end
+    -- Read progress based on archivements
     local characterPerformance = {};
     for zoneIdSize, zonePerformance in pairs(playerDataRaw.encounters) do
       local zoneId, zoneSize = strsplit("-", zoneIdSize);
@@ -1163,73 +1310,34 @@ function LogTracker:GetPlayerData(playerFull, realmNameExplicit)
   else
     self:SyncRequest(playerName);
   end
-  -- Unpack character data into a more accessible format
-  --[[
-  local addonLoaded = LoadAddOn("LogTracker_CharacterData_" .. region);
-  if not addonLoaded or not _G["LogTracker_CharacterData_" .. region][realmName] then
-    return nil;
-  end
-  local characterDataRaw = _G["LogTracker_CharacterData_"..region][realmName][playerName];
-  if characterDataRaw then
-    local characterPerformance = {};
-    for zoneIdSize, zonePerformance in pairs(characterDataRaw[5]) do
-      local zoneId, zoneSize = strsplit("-", zoneIdSize);
-      zoneId = tonumber(zoneId);
-      zoneSize = tonumber(zoneSize);
-      -- Zone name
-      local zoneName = "Unknown ("..zoneSize..")";
-      if LogTracker_BaseData.zoneNames and LogTracker_BaseData.zoneNames[zoneId] then
-        zoneName = LogTracker_BaseData.zoneNames[zoneId]['name'].." ("..zoneSize..")";
-      end
-      -- Allstars rankings
-      local zoneAllstars = {};
-      for _, zoneAllstarsRaw in ipairs(zonePerformance[3]) do
-        tinsert(zoneAllstars, {
-          ['spec'] = tonumber(zoneAllstarsRaw[1]),
-          ['percentRank'] = zoneAllstarsRaw[2]
-        });
-      end
-      -- Encounters
-      local zoneEncounters = {};
-      if zonePerformance[4] ~= "" then
-        local zoneEncountersStr = { strsplit("|", zonePerformance[4]) };
-        for zoneEncounterIndex, zoneEncountersRaw in ipairs(zoneEncountersStr) do
-          if (zoneEncountersRaw ~= "") then
-            zoneEncountersRaw = { strsplit(",", zoneEncountersRaw) };
-          else
-            zoneEncountersRaw = { 0, 0, 0 };
-          end
-          tinsert(zoneEncounters, {
-            ['spec'] = tonumber(zoneEncountersRaw[1]),
-            ['encounter'] = LogTracker_BaseData.zoneEncounters[zoneId][zoneEncounterIndex],
-            ['percentRank'] = zoneEncountersRaw[2],
-            ['percentMedian'] = zoneEncountersRaw[3]
-          });
-        end
-      end
-      -- Zone details
-      characterPerformance[zoneIdSize] = {
-        ['zoneName'] = zoneName,
-        ['zoneEncounters'] = zonePerformance[1],
-        ['encountersKilled'] = zonePerformance[2],
-        ['allstars'] = zoneAllstars,
-        ['encounters'] = zoneEncounters
-      }
-    end
-    -- Character details
-    characterData = {
-      ['level'] = characterDataRaw[1],
-      ['faction'] = characterDataRaw[2],
-      ['class'] = tonumber(characterDataRaw[3]),
-      ['last_update'] = characterDataRaw[4],
-      ['performance'] = characterPerformance,
-    };
-  end
-  --]]
   return characterData, playerName, realmName;
 end
 
 function LogTracker:GetPlayerOverallPerformance(playerData, logTargets)
+  -- Actual logs
+  if playerData["logs"] then
+    local logScoreValue = 0;
+    local logScoreCount = 0;
+    for zoneId, zoneData in pairs(playerData["logs"]) do
+      for _, encounterData in ipairs(zoneData['encounters']) do
+        local targetEncounters = nil;      
+        if logTargets and logTargets[zoneId] then
+          targetEncounters = logTargets[zoneId];
+        end
+        if not logTargets or (targetEncounters and tContains(targetEncounters, encounterData['encounter']['id'])) then
+          -- logTargets is either nil (include every encounter) or it contains the given encounter
+          logScoreValue = logScoreValue + encounterData['percentRank'];
+          logScoreCount = logScoreCount + 1;
+        end
+      end
+    end
+    if (logScoreCount > 0) then
+      return self:GetColoredPercent(logScoreValue / logScoreCount);
+    else
+      return self:GetColoredText("muted", "--");
+    end
+  end
+  -- Archivement progression
   local progression = "";
   for zoneIdSize, zoneData in pairs(playerData['performance']) do
     local zoneId, zoneSize = strsplit("-", zoneIdSize);
@@ -1246,28 +1354,6 @@ function LogTracker:GetPlayerOverallPerformance(playerData, logTargets)
   else
     return self:GetColoredText("muted", "--");
   end
-  --[[
-  local logScoreValue = 0;
-  local logScoreCount = 0;
-  for zoneId, zoneData in pairs(playerData['performance']) do
-    for _, encounterData in ipairs(zoneData['encounters']) do
-      local targetEncounters = nil;      
-      if logTargets and logTargets[zoneId] then
-        targetEncounters = logTargets[zoneId];
-      end
-      if not logTargets or (targetEncounters and tContains(targetEncounters, encounterData['encounter']['id'])) then
-        -- logTargets is either nil (include every encounter) or it contains the given encounter
-        logScoreValue = logScoreValue + encounterData['percentRank'];
-        logScoreCount = logScoreCount + 1;
-      end
-    end
-  end
-  if (logScoreCount > 0) then
-    return self:GetColoredPercent(logScoreValue / logScoreCount);
-  else
-    return self:GetColoredText("muted", "--");
-  end
-  --]]
 end
 
 function LogTracker:GetPlayerZonePerformance(zone, playerClass)
@@ -1303,11 +1389,37 @@ function LogTracker:GetPlayerEncounterPerformance(encounter, playerClass, revers
   if (encounter.spec == 0) then
     return self:GetColoredText("encounter", encounterName), "---";
   end
-  local encounterRating = self:GetSpecIcon(playerClass, encounter.spec) ..
-  " " .. self:GetColoredPercent(encounter.percentRank);
+  local encounterRating = self:GetSpecIcon(playerClass, encounter.spec) .. " " .. self:GetColoredPercent(encounter.percentRank);
   if (reversed) then
-    encounterRating = self:GetColoredPercent(encounter.percentRank) .. " " ..
-    self:GetSpecIcon(playerClass, encounter.spec);
+    encounterRating = self:GetColoredPercent(encounter.percentRank) .. " " .. self:GetSpecIcon(playerClass, encounter.spec);
+  end
+  return self:GetColoredText("encounter", encounterName), encounterRating;
+end
+
+function LogTracker:GetPlayerLogsZonePerformance(zone, playerClass)
+  local zoneName = zone.zoneName;
+  local zoneProgress = self:GetColoredProgress(tonumber(zone.encountersKilled), tonumber(zone.zoneEncounters));
+  local zoneRatingsStr = "";
+  local zoneRatings = {};
+  for _, allstarsRating in ipairs(zone.allstars) do
+    if allstarsRating.percentRank then
+      tinsert(zoneRatings, self:GetSpecIcon(playerClass, allstarsRating.spec).." "..self:GetColoredPercent(allstarsRating.percentRank));
+    end
+  end
+  if #(zoneRatings) > 0 then
+    zoneRatingsStr = strjoin(" ", unpack(zoneRatings));
+  end
+  return self:GetColoredText("zone", zoneName), self:GetColoredText("progress", zoneProgress), zoneRatingsStr;
+end
+
+function LogTracker:GetPlayerLogsEncounterPerformance(encounter, playerClass, reversed)
+  local encounterName = encounter.encounter.name;
+  if (encounter.spec == 0) then
+    return self:GetColoredText("encounter", encounterName), "---";
+  end
+  local encounterRating = self:GetSpecIcon(playerClass, encounter.spec).." "..self:GetColoredPercent(encounter.percentRank);
+  if (reversed) then
+    encounterRating = self:GetColoredPercent(encounter.percentRank).." "..self:GetSpecIcon(playerClass, encounter.spec);
   end
   return self:GetColoredText("encounter", encounterName), encounterRating;
 end
@@ -1345,6 +1457,60 @@ function LogTracker:GetSyncPeer(name, noUpdate, noCreate)
   return self.syncStatus.peers[name];
 end
 
+function LogTracker:CompareAchievements(unitId)
+  if not UnitIsPlayer(unitId) or not CheckInteractDistance(unitId, 1) then
+    return;
+  end
+  if self.achievementTime ~= nil then
+    local timeGone = GetTime() - self.achievementTime;
+    if (timeGone < 10) then
+      return;
+    end
+  end
+  local realmName = GetRealmName();
+  local playerName = UnitName(unitId);
+  self.db.playerData[realmName] = self.db.playerData[realmName] or {};
+  local playerDetails = self.db.playerData[realmName][playerName];
+  local playerAge = playerUpdateInterval + 1;
+  if playerDetails then
+    playerAge = time() - playerDetails.lastUpdate;
+  end
+  if playerAge > playerUpdateInterval then
+    local _, _, classIdGame = UnitClass(unitId);
+    local classId = 0;
+    if classIdGame == 1 then
+      classId = 11; -- Warrior
+    elseif classIdGame == 2 then
+      classId = 6; -- Paladin
+    elseif classIdGame == 3 then
+      classId = 3; -- Hunter
+    elseif classIdGame == 4 then
+      classId = 8; -- Rogue
+    elseif classIdGame == 5 then
+      classId = 7; -- Priest
+    elseif classIdGame == 6 then
+      classId = 1; -- DeathKnight
+    elseif classIdGame == 7 then
+      classId = 9; -- Shaman
+    elseif classIdGame == 8 then
+      classId = 4; -- Mage
+    elseif classIdGame == 9 then
+      classId = 10; -- Warlock
+    elseif classIdGame == 11 then
+      classId = 2; -- Druid
+    end
+    self.achievementTime = GetTime();
+    self.achievementUnit = unitId;
+    self.achievementGuid = UnitGUID(unitId);
+    self.achievementDetails.name = playerName;
+    self.achievementDetails.class = classId;
+    self.achievementDetails.level = UnitLevel(unitId);
+    self.achievementDetails.faction = UnitFactionGroup(unitId);
+    ClearAchievementComparisonUnit();
+    SetAchievementComparisonUnit(unitId);
+  end
+end
+
 function LogTracker:CleanupPlayerData()
   local playerData = self.db.playerData;
   local kept = 0;
@@ -1366,36 +1532,52 @@ function LogTracker:CleanupPlayerData()
   return removed, kept;
 end
 
-function LogTracker:CompareAchievements(unitId)
-  if not UnitIsPlayer(unitId) or not CheckInteractDistance(unitId, 1) then
+function LogTracker:ImportAppData()
+  if not LogTracker_AppData then
     return;
   end
-  if self.achievementTime ~= nil then
-    local timeGone = GetTime() - self.achievementTime;
-    if (timeGone < 10) then
-      return;
+  local importCount = 0;
+  local realmNamePlayer = GetRealmName();
+  for realmName, playerList in pairs(LogTracker_AppData) do
+    if not self.db.playerData[realmName] then
+      self.db.playerData[realmName] = {};
     end
-  end
-  local realmName = GetRealmName();
-  local playerName = UnitName(unitId);
-  self.db.playerData[realmName] = self.db.playerData[realmName] or {};
-  local playerDetails = self.db.playerData[realmName][playerName];
-  local playerAge = playerUpdateInterval + 1;
-  if playerDetails then
-    playerAge = time() - playerDetails.lastUpdate;
-  end
-  if playerAge > playerUpdateInterval then
-    local _, _, classId = UnitClass(unitId);
-    self.achievementTime = GetTime();
-    self.achievementUnit = unitId;
-    self.achievementGuid = UnitGUID(unitId);
-    self.achievementDetails.name = playerName;
-    self.achievementDetails.class = classId;
-    self.achievementDetails.level = UnitLevel(unitId);
-    self.achievementDetails.faction = UnitFactionGroup(unitId);
-    ClearAchievementComparisonUnit();
-    SetAchievementComparisonUnit(unitId);
-  end
+    for playerName, playerDetails in pairs(playerList) do
+      local playerDetailsFinal = nil;
+      local playerDetailsLocal = self.db.playerData[realmName][playerName];
+      if not playerDetailsLocal or (playerDetailsLocal.lastUpdate <= playerDetailsLocal.lastUpdate) then
+        playerDetailsFinal = { 
+          level = playerDetails[1], faction = playerDetails[2], class = playerDetails[3],
+          lastUpdate = playerDetails[4], lastUpdateLogs = playerDetails[4]
+        };
+      else
+        playerDetailsFinal = playerDetailsLocal;
+        playerDetailsFinal.lastUpdateLogs = playerDetails[4];
+      end
+      if not playerDetailsFinal.encounters then
+        playerDetailsFinal.encounters = {};
+      end
+      local zoneCount = 0;
+      local zoneData = {};
+      for zoneIdSize, zoneRankings in pairs(playerDetails[5]) do
+        -- At least one boss down?
+        if zoneRankings[2] > 0 then
+          zoneRankings[3] = self:StringifyData(zoneRankings[3]); -- Stringify allstar data to save space
+          zoneData[zoneIdSize] = zoneRankings;
+          zoneCount = zoneCount + 1;
+        end
+      end
+      if zoneCount > 0 then
+        playerDetailsFinal.logs = zoneData;
+      end
+      self.db.playerData[realmName][playerName] = playerDetailsFinal;
+      if realmName == realmNamePlayer then
+        self:SyncPlayerAdd(playerName);
+      end
+      importCount = importCount + 1;
+    end
+  end  
+  self:LogDebug("AppData", "Imported ", importCount, " players from app data.");
 end
 
 function LogTracker:SyncCheck()
@@ -1403,9 +1585,10 @@ function LogTracker:SyncCheck()
   if self.syncStatus.throttleTimer > now then
     return;
   end
+  --self:LogDebug("SyncCheck");
   self.syncStatus.throttleTimer = now + syncThrottle;
   local chatBandwidth = ChatThrottleLib:UpdateAvail();
-  if chatBandwidth < 3000 then
+  if chatBandwidth < 2000 then
     self:LogDebug("SyncPeers", "Chat bandwidth limited, skipping sync for now.", chatBandwidth);
     return;
   end
@@ -1426,47 +1609,95 @@ function LogTracker:SyncCheck()
     for i = first, last do
       tinsert(self.db.syncHistory, self.syncStatus.players[i]);
     end
+    self:LogDebug("SyncPeers", "Updated persistent sync history.");
     return;
   end
-  if (self.syncStatus.requestsTimer < now) and #(self.syncStatus.requests) > 0 then
-    -- Request missing data from other peers
-    local namesLimit = 251 - strlen(addonPrefix);
-    local namesList = "";
-    local i = 1;
-    local last = #(self.syncStatus.requests);
-    while (i <= last) and (strlen(self.syncStatus.requests[i]) < namesLimit) do
-      if namesList ~= "" then
-        namesList = namesList .. "#";
+  if (self.syncStatus.requestsTimer < now) then
+    local requestCount = 0;
+    local requestLimit = 0;
+    if #(self.syncStatus.requests) > 0 then
+      -- Request missing data from other peers
+      local namesLimit = 251 - strlen(addonPrefix);
+      local namesList = "";
+      local i = 1;
+      local last = #(self.syncStatus.requests);
+      while (i <= last) and (strlen(self.syncStatus.requests[i]) < namesLimit) do
+        if namesList ~= "" then
+          namesList = namesList .. "#";
+        end
+        namesList = namesList .. self.syncStatus.requests[i];
+        namesLimit = 251 - strlen(addonPrefix) - strlen(namesList);
+        i = i + 1;
       end
-      namesList = namesList .. self.syncStatus.requests[i];
-      namesLimit = 251 - strlen(addonPrefix) - strlen(namesList);
-      i = i + 1;
-    end
-    --self:LogDebug("Request", namesList);
-    local guild, party, raid, whisper = self:SyncUpdateFull();
-    if (guild + party + raid + whisper) > 0 then
-      self:LogDebug("Requesting Sync for ", i, " players");
-    end
-    if guild > 0 then
-      self:SendAddonMessage("rq", namesList, "GUILD");
-    end
-    if party > 0 then
-      self:SendAddonMessage("rq", namesList, "PARTY");
-    end
-    if raid > 0 then
-      self:SendAddonMessage("rq", namesList, "RAID");
-    end
-    if whisper > 0 then
-      for name, peer in pairs(self.syncStatus.peers) do
-        if peer.isWhisper then
-          self:SendAddonMessage("rq", namesList, "WHISPER", name);
+      --self:LogDebug("Request", namesList);
+      local guild, party, raid, whisper = self:SyncUpdateFull();
+      if (guild + party + raid + whisper) > 0 then
+        self:LogDebug("Requesting Sync for ", i, " players");
+      end
+      if guild > 0 then
+        self:SendAddonMessage("rq", namesList, "GUILD");
+      end
+      if party > 0 then
+        self:SendAddonMessage("rq", namesList, "PARTY");
+      end
+      if raid > 0 then
+        self:SendAddonMessage("rq", namesList, "RAID");
+      end
+      if whisper > 0 then
+        for name, peer in pairs(self.syncStatus.peers) do
+          if peer.isWhisper then
+            self:SendAddonMessage("rq", namesList, "WHISPER", name);
+          end
         end
       end
+      requestCount = requestCount + i;
+      requestLimit = requestLimit + syncRequestLimit;
+      wipe(self.syncStatus.requests);
     end
-    -- Clear request list and timer
-    local ratio = 1 - i / syncRequestLimit;
-    self.syncStatus.requestsTimer = GetTime() + syncRequestDelay * ratio;
-    wipe(self.syncStatus.requests);
+    if #(self.syncStatus.requestsLogs) > 0 then
+      -- Request missing data from other peers
+      local namesLimit = 251 - strlen(addonPrefix);
+      local namesList = "";
+      local i = 1;
+      local last = #(self.syncStatus.requestsLogs);
+      while (i <= last) and (strlen(self.syncStatus.requestsLogs[i]) < namesLimit) do
+        if namesList ~= "" then
+          namesList = namesList .. "#";
+        end
+        namesList = namesList .. self.syncStatus.requestsLogs[i];
+        namesLimit = 251 - strlen(addonPrefix) - strlen(namesList);
+        i = i + 1;
+      end
+      --self:LogDebug("Request", namesList);
+      local guild, party, raid, whisper = self:SyncUpdateFull();
+      if (guild + party + raid + whisper) > 0 then
+        self:LogDebug("Requesting Sync for ", i, " players");
+      end
+      if guild > 0 then
+        self:SendAddonMessage("rqL", namesList, "GUILD");
+      end
+      if party > 0 then
+        self:SendAddonMessage("rqL", namesList, "PARTY");
+      end
+      if raid > 0 then
+        self:SendAddonMessage("rqL", namesList, "RAID");
+      end
+      if whisper > 0 then
+        for name, peer in pairs(self.syncStatus.peers) do
+          if peer.isWhisper then
+            self:SendAddonMessage("rqL", namesList, "WHISPER", name);
+          end
+        end
+      end
+      requestCount = requestCount + i;
+      requestLimit = requestLimit + syncRequestLimit;
+      wipe(self.syncStatus.requestsLogs);
+    end
+    if requestLimit > 0 then
+      -- Clear request timer
+      local ratio = 1 - requestLimit / requestLimit;
+      self.syncStatus.requestsTimer = GetTime() + syncRequestDelay * ratio;
+    end
   end
   if self.syncStatus.timer < now then
     -- Check for pending sync data (Every 5 seconds if due and chat bandwidth available)
@@ -1501,7 +1732,7 @@ function LogTracker:SyncCheck()
       local whisperPeers, whisperOffset = self:SyncUpdateWhisper();
       if whisperPeers > 0 and whisperOffset < playerCount then
         for name, peer in pairs(self.syncStatus.peers) do
-          if peer.isWhisper and peer.syncOffset < playerCount then
+          if peer.isWhisper and peer.syncOffset == whisperOffset and peer.syncOffset < playerCount then
             local offset, sent = self:SyncSend("WHISPER", name, peer.syncOffset, syncBatchPlayers);
             peer.syncOffset = offset;
             self:LogDebug("Sync", name, "Whisper", offset, "/", playerCount, " (" .. sent .. ")");
@@ -1546,7 +1777,7 @@ function LogTracker:SyncUpdateGuild()
         if peer.isOnline then
           peer.isGuild = true;
           peer.lastSeen = GetTime();
-          self.syncStatus.guild = min(self.syncStatus.guild, peer.syncOffset);
+          self.syncStatus.guild = max(0, min(self.syncStatus.guild, peer.syncOffset));
           peers = peers + 1;
         end
       end
@@ -1582,7 +1813,7 @@ function LogTracker:SyncUpdateParty()
         if peer.isOnline then
           peer.isParty = true;
           peer.lastSeen = GetTime();
-          self.syncStatus.party = min(self.syncStatus.party, peer.syncOffset);
+          self.syncStatus.party = max(0, min(self.syncStatus.party, peer.syncOffset));
           peers = peers + 1;
         end
       end
@@ -1619,7 +1850,7 @@ function LogTracker:SyncUpdateRaid()
         if peer.isOnline then
           peer.isRaid = true;
           peer.lastSeen = GetTime();
-          self.syncStatus.raid = min(self.syncStatus.raid, peer.syncOffset);
+          self.syncStatus.raid = max(0, min(self.syncStatus.raid, peer.syncOffset));
           peers = peers + 1;
         end
       end
@@ -1634,6 +1865,7 @@ end
 
 function LogTracker:SyncUpdateWhisper()
   local peers = 0;
+  self.syncStatus.whisper = #(self.syncStatus.players);
   -- Check peers from friends list
   local friends = C_FriendList.GetNumFriends();
   for i = 1, friends do
@@ -1654,7 +1886,7 @@ function LogTracker:SyncUpdateWhisper()
     -- Check if peer should sync via whisper
     if peer.isOnline and not peer.isGuild and not peer.isParty and not peer.isRaid then
       peer.isWhisper = true;
-      self.syncStatus.whisper = min(self.syncStatus.whisper, peer.syncOffset);
+      self.syncStatus.whisper = max(0, min(self.syncStatus.whisper, peer.syncOffset));
       peers = peers + 1;
     else
       peer.isWhisper = false;
@@ -1666,7 +1898,21 @@ function LogTracker:SyncUpdateWhisper()
   return peers, self.syncStatus.whisper;
 end
 
+function LogTracker:SyncPlayerAdd(playerName)
+  if not tContains(self.syncStatus.players, playerName) then
+    tinsert(self.syncStatus.players, playerName);
+  end
+  if #(self.syncStatus.players) > syncHistoryLimit then
+    self.syncStatus.offsetStart = syncHistoryLimit - #(self.syncStatus.players);
+  end
+end
+
 function LogTracker:SyncRequest(name)
+  self:SyncRequestBase(name);
+  self:SyncRequestLogs(name);
+end
+
+function LogTracker:SyncRequestBase(name)
   -- Check if user is already in the request list
   local requestIndex = nil;
   for i, requestName in ipairs(self.syncStatus.requests) do
@@ -1687,7 +1933,33 @@ function LogTracker:SyncRequest(name)
   tinsert(self.syncStatus.requests, 1, name);
 end
 
+function LogTracker:SyncRequestLogs(name)
+  -- Check if user is already in the request list
+  local requestIndex = nil;
+  for i, requestName in ipairs(self.syncStatus.requestsLogs) do
+    if requestName == name then
+      requestIndex = i;
+      break;
+    end
+  end
+  -- Remove existing entry if present (will be prepended)
+  if requestIndex ~= nil then
+    tremove(self.syncStatus.requestsLogs, requestIndex);
+  end
+  -- Shorten list to respect limit
+  while #(self.syncStatus.requestsLogs) >= syncRequestLimit do
+    tremove(self.syncStatus.requestsLogs, syncRequestLimit);
+  end
+  -- Prepend requested player
+  tinsert(self.syncStatus.requestsLogs, 1, name);
+end
+
 function LogTracker:SyncRequestRemove(name)
+  self:SyncRequestRemoveBase(name);
+  self:SyncRequestRemoveLogs(name);
+end
+
+function LogTracker:SyncRequestRemoveBase(name)
   -- Check if user is already in the request list
   local requestIndex = nil;
   for i, requestName in ipairs(self.syncStatus.requests) do
@@ -1699,6 +1971,23 @@ function LogTracker:SyncRequestRemove(name)
   -- Remove existing entry if present (will be prepended)
   if requestIndex ~= nil then
     tremove(self.syncStatus.requests, requestIndex);
+    return true;
+  end
+  return false;
+end
+
+function LogTracker:SyncRequestRemoveLogs(name)
+  -- Check if user is already in the request list
+  local requestIndex = nil;
+  for i, requestName in ipairs(self.syncStatus.requestsLogs) do
+    if requestName == name then
+      requestIndex = i;
+      break;
+    end
+  end
+  -- Remove existing entry if present (will be prepended)
+  if requestIndex ~= nil then
+    tremove(self.syncStatus.requestsLogs, requestIndex);
     return true;
   end
   return false;
@@ -1798,13 +2087,28 @@ function LogTracker:SendSystemChatLine(text)
 end
 
 function LogTracker:SendPlayerInfoToChat(playerData, playerName, playerRealm, showEncounters)
-  for zoneId, zone in pairs(playerData.performance) do
-    local zoneName, zoneProgress, zoneSpecs = self:GetPlayerZonePerformance(zone, playerData.class);
-    self:SendSystemChatLine(self:GetPlayerLink(playerName) .. " " .. strjoin(" ", self:GetPlayerZonePerformance(zone, playerData.class)));
-    if showEncounters then
-      for _, encounter in ipairs(zone.encounters) do
-        local encounterName, encounterRating = self:GetPlayerEncounterPerformance(encounter, playerData.class);
-        self:SendSystemChatLine("  " .. encounterName .. ": " .. encounterRating);
+  if playerData.logs then
+    -- Actual logs
+    for zoneId, zone in pairs(playerData.logs) do
+      local zoneName, zoneProgress, zoneSpecs = self:GetPlayerZonePerformance(zone, playerData.class);
+      self:SendSystemChatLine( self:GetPlayerLink(playerName).." "..strjoin(" ", self:GetPlayerZonePerformance(zone, playerData.class)) );
+      if showEncounters then
+        for _, encounter in ipairs(zone.encounters) do
+          local encounterName, encounterRating = self:GetPlayerEncounterPerformance(encounter, playerData.class);
+          self:SendSystemChatLine("  "..encounterName..": "..encounterRating);
+        end
+      end
+    end
+  else
+    -- Progress by archivments
+    for zoneId, zone in pairs(playerData.performance) do
+      local zoneName, zoneProgress, zoneSpecs = self:GetPlayerZonePerformance(zone, playerData.class);
+      self:SendSystemChatLine(self:GetPlayerLink(playerName) .. " " .. strjoin(" ", self:GetPlayerZonePerformance(zone, playerData.class)));
+      if showEncounters then
+        for _, encounter in ipairs(zone.encounters) do
+          local encounterName, encounterRating = self:GetPlayerEncounterPerformance(encounter, playerData.class);
+          self:SendSystemChatLine("  " .. encounterName .. ": " .. encounterRating);
+        end
       end
     end
   end
@@ -1812,21 +2116,45 @@ function LogTracker:SendPlayerInfoToChat(playerData, playerName, playerRealm, sh
 end
 
 function LogTracker:SetPlayerInfoTooltip(playerData, playerName, playerRealm, disableShiftNotice)
-  for zoneIdSize, zone in pairs(playerData.performance) do
-    local zoneId, zoneSize = strsplit("-", zoneIdSize);
-    if (zoneSize == "10" and not self.db.hide10Player) or (zoneSize == "25" and not self.db.hide25Player) then
-      local zoneName, zoneProgress, zoneSpecs = self:GetPlayerZonePerformance(zone, playerData.class);
-      GameTooltip:AddDoubleLine(
-        zoneName .. " " .. zoneProgress, zoneSpecs,
-        1, 1, 1, 1, 1, 1
-      );
-      if IsShiftKeyDown() then
-        for _, encounter in ipairs(zone.encounters) do
-          local encounterName, encounterRating = self:GetPlayerEncounterPerformance(encounter, playerData.class, true);
-          GameTooltip:AddDoubleLine(
-            "  " .. encounterName, encounterRating,
-            1, 1, 1, 1, 1, 1
-          );
+  if playerData.logs then
+    -- Actual logs
+    for zoneIdSize, zone in pairs(playerData.logs) do
+      local zoneId, zoneSize = strsplit("-", zoneIdSize);
+      if (zoneSize == "10" and not self.db.hide10Player) or (zoneSize == "25" and not self.db.hide25Player) then
+        local zoneName, zoneProgress, zoneSpecs = self:GetPlayerLogsZonePerformance(zone, playerData.class);
+        GameTooltip:AddDoubleLine(
+          zoneName .. " " .. zoneProgress, zoneSpecs,
+          1, 1, 1, 1, 1, 1
+        );
+        if IsShiftKeyDown() then
+          for _, encounter in ipairs(zone.encounters) do
+            local encounterName, encounterRating = self:GetPlayerLogsEncounterPerformance(encounter, playerData.class, true);
+            GameTooltip:AddDoubleLine(
+              "  " .. encounterName, encounterRating,
+              1, 1, 1, 1, 1, 1
+            );
+          end
+        end
+      end
+    end
+  else
+    -- Progress by archivments
+    for zoneIdSize, zone in pairs(playerData.performance) do
+      local zoneId, zoneSize = strsplit("-", zoneIdSize);
+      if (zoneSize == "10" and not self.db.hide10Player) or (zoneSize == "25" and not self.db.hide25Player) then
+        local zoneName, zoneProgress, zoneSpecs = self:GetPlayerZonePerformance(zone, playerData.class);
+        GameTooltip:AddDoubleLine(
+          zoneName .. " " .. zoneProgress, zoneSpecs,
+          1, 1, 1, 1, 1, 1
+        );
+        if IsShiftKeyDown() then
+          for _, encounter in ipairs(zone.encounters) do
+            local encounterName, encounterRating = self:GetPlayerEncounterPerformance(encounter, playerData.class, true);
+            GameTooltip:AddDoubleLine(
+              "  " .. encounterName, encounterRating,
+              1, 1, 1, 1, 1, 1
+            );
+          end
         end
       end
     end
