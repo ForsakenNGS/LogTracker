@@ -1634,7 +1634,7 @@ function LogTracker:ImportAppData()
         playerDetailsFinal.encounters = {};
       end
       local zoneCount = 0;
-      local zoneData = playerDetailsLocal.logs;
+      local zoneData = playerDetailsLocal.logs or {};
       for zoneIdSize, zoneRankings in pairs(playerDetails[5]) do
         -- At least one boss down?
         if zoneRankings[2] > 0 then
