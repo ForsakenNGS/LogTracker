@@ -12,9 +12,10 @@ local syncPeerGreeting = 60;           -- 1 minute
 local syncPeerTimeout = 300;           -- 5 minutes
 local syncPeerUpdates = 1800;          -- 30 minutes
 local syncBatchPlayers = 20;           -- Sync up to 20 players per batch
-local syncRequestLimit = 30;           -- Keep up to 30 players in a request list (to retrieve missing data from other clients)
-local syncRequestDelay = 60;           -- 1 minute
+local syncRequestLimit = 10;           -- Keep up to 10 players in a request list (to retrieve missing data from other clients)
+local syncRequestDelay = 10;           -- 10 seconds
 local playerUpdateInterval = 3600;     -- 1 hours
+local playerLogsInterval = 86400;       -- 1 day
 local playerAgeLimit = 86400 * 21;     -- 3 weeks
 
 LogTracker = CreateFrame("Frame", "LogTracker", UIParent);
@@ -505,7 +506,7 @@ function LogTracker:UnstringifyData(dataStr, glueOuter, glueInner)
   local data = {};
   local dataRaw = { strsplit(glueOuter, dataStr) };
   for _, valuesStr in ipairs(dataRaw) do
-    tinsert(data, { strsplit(glueInner,valuesStr) });
+    tinsert(data, { strsplit(glueInner, valuesStr) });
   end
   return data;
 end
@@ -758,6 +759,12 @@ function LogTracker:OnChatMsgAddon(prefix, message, source, sender)
             playerData.encounters = {};
           end
           playerData.encounters[zoneId] = encouterData;
+          -- Update tooltip if target is active
+          local unitName, unitId = GameTooltip:GetUnit();
+          if unitName and (unitName == name) then
+            self:LogDebug("Received encounter data for active tooltip, updating... (Sync from "..syncName..")");
+            GameTooltip:SetUnit(unitId);
+          end
         end
       end
     elseif action == "plL" then
@@ -774,6 +781,12 @@ function LogTracker:OnChatMsgAddon(prefix, message, source, sender)
           end
           playerData.logs[zoneId] = { encounters, encountersKilled, allstarDataStr, encounterDataStr };
           playerData.lastUpdateLogs = playerData.lastUpdate;
+          -- Update tooltip if target is active
+          local unitName, unitId = GameTooltip:GetUnit();
+          if unitName and (unitName == name) then
+            self:LogDebug("Received log data for active tooltip, updating... (Sync from "..syncName..")");
+            GameTooltip:SetUnit(unitId);
+          end
         end
       end
     elseif action == "rq" then
@@ -836,9 +849,8 @@ function LogTracker:OnChatMsgSystem(text)
   if not self.db.chatExtension then
     return;
   end
-  local offlineMatch = strmatch("No player named 'test' is currently playing.", gsub(ERR_CHAT_PLAYER_NOT_FOUND_S, "%%s", "(.+)"));
-  if offlineMatch then
-    local offlineName = offlineMatch[1];
+  local offlineName = strmatch(text, gsub(ERR_CHAT_PLAYER_NOT_FOUND_S, "%%s", "(.+)"));
+  if offlineName then
     local peer = self:GetSyncPeer(offlineName, true, true);
     if peer then
       peer.isOnline = false;
@@ -931,6 +943,12 @@ function LogTracker:OnInspectAchievements(playerGuid)
   self:SyncRequestRemove(playerName);
   --self:LogDebug("Updated achievements for ", playerName);
   self:SyncCheck();
+  -- Update tooltip if target is active
+  local unitName, unitId = GameTooltip:GetUnit();
+  if unitName and (unitName == playerName) then
+    self:LogDebug("Updated encounter data for active tooltip, updating...");
+    GameTooltip:SetUnit(unitId);
+  end
   -- Clear unit / guid for inspect
   self.achievementTime = nil;
   self.achievementGuid = nil;
@@ -1218,21 +1236,52 @@ function LogTracker:GetPlayerData(playerFull, realmNameExplicit)
         end
         -- Encounters
         local zoneEncounters = {};
+        local zoneEncountersHardmodes = 0;
+        local zoneEncountersArchivementsRaw = nil;
+        if playerDataRaw.encounters and playerDataRaw.encounters[zoneIdSize] then
+          zoneEncountersArchivementsRaw = { strsplit("/", playerDataRaw.encounters[zoneIdSize]) };
+        end
         if zonePerformance[4] ~= "" then
           local zoneEncountersRaw = self:UnstringifyData(zonePerformance[4]);
           for zoneEncounterIndex, zoneEncountersEntry in ipairs(zoneEncountersRaw) do
-            tinsert(zoneEncounters, {
+            local zoneEncounterData = {
               ['spec'] = tonumber(zoneEncountersEntry[1] or 0),
               ['encounter'] = LogTracker_BaseData.zoneEncounters[zoneId][zoneEncounterIndex],
               ['percentRank'] = zoneEncountersEntry[2] or 0,
-              ['percentMedian'] = zoneEncountersEntry[3] or 0
-            });
+              ['percentMedian'] = zoneEncountersEntry[3] or 0,
+              ['kills'] = 0,
+              ['hardmode'] = "",
+              ['hardmodeDiff'] = 0
+            };
+            if zoneEncountersArchivementsRaw and zoneEncountersArchivementsRaw[zoneEncounterIndex] then
+              -- Add hardmode data
+              local zoneEncounterRaw = zoneEncountersArchivementsRaw[zoneEncounterIndex];
+              local zoneEncounterKills, zoneEncounterHmDiff, zoneEncounterHmLabel = strsplit(",", zoneEncounterRaw);
+              if zoneEncounterRaw == "" then
+                zoneEncounterKills = 0;
+                zoneEncounterHmDiff = 0;
+                zoneEncounterHmLabel = "Easy";
+              else
+                zoneEncounterKills = tonumber(zoneEncounterKills);
+              end
+              if zoneEncounterKills > 0 then
+                zoneEncounterHmDiff = tonumber(zoneEncounterHmDiff);
+                if zoneEncounterHmDiff > 1 then
+                  zoneEncountersHardmodes = zoneEncountersHardmodes + 1;
+                end
+              end
+              zoneEncounterData['kills'] = zoneEncounterKills;
+              zoneEncounterData['hardmode'] = self:GetColoredText("hardmode" .. zoneEncounterHmDiff, zoneEncounterHmLabel);
+              zoneEncounterData['hardmodeDiff'] = zoneEncounterHmDiff;
+            end
+            tinsert(zoneEncounters, zoneEncounterData);
           end
         end
         -- Zone details
         characterPerformance[zoneIdSize] = {
           ['zoneName'] = zoneName,
           ['zoneEncounters'] = zonePerformance[1],
+          ['hardmodes'] = zoneEncountersHardmodes,
           ['encountersKilled'] = zonePerformance[2],
           ['allstars'] = zoneAllstars,
           ['encounters'] = zoneEncounters
@@ -1243,9 +1292,14 @@ function LogTracker:GetPlayerData(playerFull, realmNameExplicit)
         ['level'] = playerDataRaw.level,
         ['faction'] = playerDataRaw.faction,
         ['class'] = tonumber(playerDataRaw.class),
-        ['last_update'] = playerDataRaw.lastUpdate,
+        ['last_update'] = playerDataRaw.lastUpdateLogs,
         ['logs'] = characterPerformance,
       };
+      local characterLogsAge = GetTime() - playerDataRaw.lastUpdateLogs;
+      if characterLogsAge > playerLogsInterval then
+        -- Data older than desired, request update
+        self:SyncRequestLogs(playerName);
+      end
       return characterData, playerName, realmName;
     else
       self:SyncRequestLogs(playerName);
@@ -1295,7 +1349,8 @@ function LogTracker:GetPlayerData(playerFull, realmNameExplicit)
         tinsert(zoneEncounters, {
           ['encounter'] = LogTracker_BaseData.zoneEncounters[zoneId][zoneEncounterIndex],
           ['kills'] = zoneEncounterKills,
-          ['hardmode'] = self:GetColoredText("hardmode" .. zoneEncounterHmDiff, zoneEncounterHmLabel)
+          ['hardmode'] = self:GetColoredText("hardmode" .. zoneEncounterHmDiff, zoneEncounterHmLabel),
+          ['hardmodeDiff'] = zoneEncounterHmDiff
         });
       end
       -- Zone details
@@ -1367,6 +1422,7 @@ end
 function LogTracker:GetPlayerZonePerformance(zone, playerClass)
   local zoneName = zone.zoneName;
   local zoneProgress = self:GetColoredProgress(tonumber(zone.encountersKilled), tonumber(zone.zoneEncounters));
+  local zoneHardmodesStr = "";
   local zoneRatingsStr = "";
   local zoneRatings = {};
   if zone.allstars then
@@ -1379,17 +1435,16 @@ function LogTracker:GetPlayerZonePerformance(zone, playerClass)
     zoneRatingsStr = strjoin(" ", unpack(zoneRatings));
   end
   if zone.hardmodes and zone.hardmodes > 0 then
-    zoneRatingsStr = zoneRatingsStr .. self:GetColoredText("hardmode4", zone.hardmodes .. "HM");
+    zoneHardmodesStr = zoneHardmodesStr .. self:GetColoredText("hardmode4", zone.hardmodes .. "HM");
   end
-  return self:GetColoredText("zone", zoneName), self:GetColoredText("progress", zoneProgress), zoneRatingsStr;
+  return self:GetColoredText("zone", zoneName), self:GetColoredText("progress", zoneProgress), zoneHardmodesStr, zoneRatingsStr;
 end
 
 function LogTracker:GetPlayerEncounterPerformance(encounter, playerClass, reversed)
   local encounterName = encounter.encounter.name;
   if not encounter.spec and encounter.kills then
     if (encounter.kills > 0) then
-      return self:GetColoredText("encounter", encounterName),
-      encounter.hardmode .. " " .. self:GetColoredText("kills", encounter.kills .. "x");
+      return self:GetColoredText("encounter", encounterName), encounter.hardmode .. " " .. self:GetColoredText("kills", encounter.kills .. "x");
     else
       return self:GetColoredText("encounter", encounterName), self:GetColoredText("muted", "not down");
     end
@@ -1401,12 +1456,13 @@ function LogTracker:GetPlayerEncounterPerformance(encounter, playerClass, revers
   if (reversed) then
     encounterRating = self:GetColoredPercent(encounter.percentRank) .. " " .. self:GetSpecIcon(playerClass, encounter.spec);
   end
-  return self:GetColoredText("encounter", encounterName), encounterRating;
+  return self:GetColoredText("encounter", encounterName) .. " " .. encounter.hardmode, encounterRating;
 end
 
 function LogTracker:GetPlayerLogsZonePerformance(zone, playerClass)
   local zoneName = zone.zoneName;
   local zoneProgress = self:GetColoredProgress(tonumber(zone.encountersKilled), tonumber(zone.zoneEncounters));
+  local zoneHardmodesStr = "";
   local zoneRatingsStr = "";
   local zoneRatings = {};
   for _, allstarsRating in ipairs(zone.allstars) do
@@ -1417,17 +1473,27 @@ function LogTracker:GetPlayerLogsZonePerformance(zone, playerClass)
   if #(zoneRatings) > 0 then
     zoneRatingsStr = strjoin(" ", unpack(zoneRatings));
   end
-  return self:GetColoredText("zone", zoneName), self:GetColoredText("progress", zoneProgress), zoneRatingsStr;
+  if zone.hardmodes and zone.hardmodes > 0 then
+    zoneHardmodesStr = zoneHardmodesStr .. self:GetColoredText("hardmode4", zone.hardmodes .. "HM");
+  end
+  return self:GetColoredText("zone", zoneName), self:GetColoredText("progress", zoneProgress), zoneHardmodesStr, zoneRatingsStr;
 end
 
 function LogTracker:GetPlayerLogsEncounterPerformance(encounter, playerClass, reversed)
   local encounterName = encounter.encounter.name;
   if (encounter.spec == 0) then
-    return self:GetColoredText("encounter", encounterName), "---";
+    if (encounter.kills > 0) then
+      return self:GetColoredText("encounter", encounterName), encounter.hardmode .. " " .. self:GetColoredText("kills", encounter.kills .. "x");
+    else
+      return self:GetColoredText("encounter", encounterName), self:GetColoredText("muted", "not down");
+    end
   end
   local encounterRating = self:GetSpecIcon(playerClass, encounter.spec).." "..self:GetColoredPercent(encounter.percentRank);
   if (reversed) then
     encounterRating = self:GetColoredPercent(encounter.percentRank).." "..self:GetSpecIcon(playerClass, encounter.spec);
+  end
+  if (encounter.hardmodeDiff > 0) then
+    encounterRating = encounter.hardmode .. " " .. encounterRating;
   end
   return self:GetColoredText("encounter", encounterName), encounterRating;
 end
@@ -1556,7 +1622,9 @@ function LogTracker:ImportAppData()
       if not playerDetailsLocal or (playerDetailsLocal.lastUpdate <= playerDetailsLocal.lastUpdate) then
         playerDetailsFinal = { 
           level = playerDetails[1], faction = playerDetails[2], class = playerDetails[3],
-          lastUpdate = playerDetails[4], lastUpdateLogs = playerDetails[4]
+          lastUpdate = playerDetails[4], lastUpdateLogs = playerDetails[4],
+          encounters = playerDetailsLocal.encounters or {},
+          logs = playerDetailsLocal.logs or {}
         };
       else
         playerDetailsFinal = playerDetailsLocal;
@@ -1566,7 +1634,7 @@ function LogTracker:ImportAppData()
         playerDetailsFinal.encounters = {};
       end
       local zoneCount = 0;
-      local zoneData = {};
+      local zoneData = playerDetailsLocal.logs;
       for zoneIdSize, zoneRankings in pairs(playerDetails[5]) do
         -- At least one boss down?
         if zoneRankings[2] > 0 then
@@ -1597,7 +1665,7 @@ function LogTracker:SyncCheck()
   self.syncStatus.throttleTimer = now + syncThrottle;
   local chatBandwidth = ChatThrottleLib:UpdateAvail();
   if chatBandwidth < 2000 then
-    self:LogDebug("SyncPeers", "Chat bandwidth limited, skipping sync for now.", chatBandwidth);
+    --self:LogDebug("SyncPeers", "Chat bandwidth limited, skipping sync for now.", chatBandwidth);
     return;
   end
   self:SyncSendHello("YELL");
@@ -2098,7 +2166,6 @@ function LogTracker:SendPlayerInfoToChat(playerData, playerName, playerRealm, sh
   if playerData.logs then
     -- Actual logs
     for zoneId, zone in pairs(playerData.logs) do
-      local zoneName, zoneProgress, zoneSpecs = self:GetPlayerZonePerformance(zone, playerData.class);
       self:SendSystemChatLine( self:GetPlayerLink(playerName).." "..strjoin(" ", self:GetPlayerZonePerformance(zone, playerData.class)) );
       if showEncounters then
         for _, encounter in ipairs(zone.encounters) do
@@ -2110,7 +2177,6 @@ function LogTracker:SendPlayerInfoToChat(playerData, playerName, playerRealm, sh
   else
     -- Progress by archivments
     for zoneId, zone in pairs(playerData.performance) do
-      local zoneName, zoneProgress, zoneSpecs = self:GetPlayerZonePerformance(zone, playerData.class);
       self:SendSystemChatLine(self:GetPlayerLink(playerName) .. " " .. strjoin(" ", self:GetPlayerZonePerformance(zone, playerData.class)));
       if showEncounters then
         for _, encounter in ipairs(zone.encounters) do
@@ -2129,9 +2195,9 @@ function LogTracker:SetPlayerInfoTooltip(playerData, playerName, playerRealm, di
     for zoneIdSize, zone in pairs(playerData.logs) do
       local zoneId, zoneSize = strsplit("-", zoneIdSize);
       if (zoneSize == "10" and not self.db.hide10Player) or (zoneSize == "25" and not self.db.hide25Player) then
-        local zoneName, zoneProgress, zoneSpecs = self:GetPlayerLogsZonePerformance(zone, playerData.class);
+        local zoneName, zoneProgress, zoneHardmodes, zoneSpecs = self:GetPlayerLogsZonePerformance(zone, playerData.class);
         GameTooltip:AddDoubleLine(
-          zoneName .. " " .. zoneProgress, zoneSpecs,
+          zoneName .. " " .. zoneProgress .. " " .. zoneHardmodes, zoneSpecs,
           1, 1, 1, 1, 1, 1
         );
         if IsShiftKeyDown() then
@@ -2150,9 +2216,9 @@ function LogTracker:SetPlayerInfoTooltip(playerData, playerName, playerRealm, di
     for zoneIdSize, zone in pairs(playerData.performance) do
       local zoneId, zoneSize = strsplit("-", zoneIdSize);
       if (zoneSize == "10" and not self.db.hide10Player) or (zoneSize == "25" and not self.db.hide25Player) then
-        local zoneName, zoneProgress, zoneSpecs = self:GetPlayerZonePerformance(zone, playerData.class);
+        local zoneName, zoneProgress, zoneHardmodes, zoneSpecs = self:GetPlayerZonePerformance(zone, playerData.class);
         GameTooltip:AddDoubleLine(
-          zoneName .. " " .. zoneProgress, zoneSpecs,
+          zoneName .. " " .. zoneProgress .. " " .. zoneHardmodes, zoneSpecs,
           1, 1, 1, 1, 1, 1
         );
         if IsShiftKeyDown() then
