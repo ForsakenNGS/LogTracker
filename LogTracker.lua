@@ -1214,12 +1214,14 @@ function LogTracker:GetPlayerData(playerFull, realmNameExplicit)
   if playerDataRaw then
     if playerDataRaw.logs then
       -- Read actual log data
+      local zoneCount = 0;
       local logData = playerDataRaw.logs;
       local characterPerformance = {};
       for zoneIdSize, zonePerformance in pairs(logData) do
         local zoneId, zoneSize = strsplit("-", zoneIdSize);
         zoneId = tonumber(zoneId);
         zoneSize = tonumber(zoneSize);
+        zoneCount = zoneCount + 1;
         -- Zone name
         local zoneName = "Unknown ("..zoneSize..")";
         if LogTracker_BaseData.zoneNames and LogTracker_BaseData.zoneNames[zoneId] then
@@ -1300,7 +1302,9 @@ function LogTracker:GetPlayerData(playerFull, realmNameExplicit)
         -- Data older than desired, request update
         self:SyncRequestLogs(playerName);
       end
-      return characterData, playerName, realmName;
+      if zoneCount > 0 then
+        return characterData, playerName, realmName;
+      end
     else
       self:SyncRequestLogs(playerName);
     end
