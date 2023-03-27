@@ -774,9 +774,9 @@ function LogTracker:OnCommMessageDecoded(message_type, message_data, distributio
     return;
   end
   if message_type == "hi" then
-    peer.version = message_data.version;
+    peer.version = message_data.version or peer.version;
   elseif message_type == "pl" then
-    peer.version = message_data.version;
+    peer.version = message_data.version or peer.version;
     for i, playerDataRcv in ipairs(message_data.players) do
       local playerData = self.db.playerData[realmName][playerDataRcv.name];
       local updated = false;
@@ -811,17 +811,17 @@ function LogTracker:OnCommMessageDecoded(message_type, message_data, distributio
       end
     end
   elseif message_type == "rq" then
-    peer.version = message_data.version;
+    peer.version = message_data.version or peer.version;
     -- Request for player data
     local amount = self:SyncSendByNames(message_data.names, distribution, sender);
     self:LogDebug("Sync Request (base)", syncName, "Sent " .. amount .. " / " .. #message_data.names .. " players");
-    self:LogDebug("Sync Request (base)", unpack(message_data.names));
+    --self:LogDebug("Sync Request (base)", unpack(message_data.names));
   elseif message_type == "rqL" then
-    peer.version = message_data.version;
+    peer.version = message_data.version or peer.version;
     -- Request for player logs
     local amount = self:SyncSendByNames(message_data.names, distribution, sender, true);
     self:LogDebug("Sync Request (logs)", syncName, "Sent " .. amount .. " / " .. #message_data.names .. " players");
-    self:LogDebug("Sync Request (logs)", unpack(message_data.names));
+    --self:LogDebug("Sync Request (logs)", unpack(message_data.names));
   end
   peer.chatReported = false;
   peer.lastUpdate = GetTime();
@@ -860,7 +860,7 @@ function LogTracker:OnChatMsgAddon(prefix, message, source, sender)
         lastUpdate = tonumber(lastUpdate);
         local playerData = self.db.playerData[realmName][name];
         peer.receivedOverall = peer.receivedOverall + 1;
-        peer.version = peerSyncVersion;
+        peer.version = peerSyncVersion or peer.version;
         if not playerData then
           playerData = { encounters = {}, lastUpdate = lastUpdate - 1 };
         end
