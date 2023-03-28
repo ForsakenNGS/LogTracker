@@ -34,7 +34,9 @@ function LogTracker:Init()
     lfgExtension = true,
     slashExtension = true,
     hide10Player = false,
-    hide25Player = false
+    hide25Player = false,
+    syncSend = true,
+    syncReceive = true
   };
   self.syncStatus = {
     guild = 0,
@@ -483,9 +485,25 @@ function LogTracker:InitOptions()
     self.db.hide25Player = self.optionHide25Player:GetChecked();
   end)
   self.optionHide25Player:SetChecked(self.db.hide25Player);
-  -- Show 25 player logs
+  -- Send player data to other clients
+  self.optionSyncSend = CreateFrame("CheckButton", nil, self.optionsPanel, "InterfaceOptionsCheckButtonTemplate");
+  self.optionSyncSend:SetPoint("TOPLEFT", 20, -140);
+  self.optionSyncSend.Text:SetText(L["OPTION_SYNC_SEND"]);
+  self.optionSyncSend:SetScript("OnClick", function(_, value)
+    self.db.syncSend = self.optionSyncSend:GetChecked();
+  end)
+  self.optionSyncSend:SetChecked(self.db.syncSend);
+  -- Receive player data from other clients
+  self.optionSyncReceive = CreateFrame("CheckButton", nil, self.optionsPanel, "InterfaceOptionsCheckButtonTemplate");
+  self.optionSyncReceive:SetPoint("TOPLEFT", 20, -160);
+  self.optionSyncReceive.Text:SetText(L["OPTION_SYNC_RECEIVE"]);
+  self.optionSyncReceive:SetScript("OnClick", function(_, value)
+    self.db.syncReceive = self.optionSyncReceive:GetChecked();
+  end)
+  self.optionSyncReceive:SetChecked(self.db.syncReceive);
+  -- Debug output
   self.optionShowDebug = CreateFrame("CheckButton", nil, self.optionsPanel, "InterfaceOptionsCheckButtonTemplate");
-  self.optionShowDebug:SetPoint("TOPLEFT", 20, -140);
+  self.optionShowDebug:SetPoint("TOPLEFT", 20, -180);
   self.optionShowDebug.Text:SetText(L["OPTION_SHOW_DEBUG"]);
   self.optionShowDebug:SetScript("OnClick", function(_, value)
     self.db.debug = self.optionShowDebug:GetChecked();
@@ -674,34 +692,42 @@ function LogTracker:OnEvent(event, ...)
   elseif (event == "LFG_LIST_SEARCH_RESULT_UPDATED") then
     self:OnLfgListSearchResultUpdated(...);
   elseif (event == "PLAYER_ENTERING_WORLD") then
-    -- Cleanup player data
-    self:CleanupPlayerData();
-    -- Import app data
-    self:ImportAppData();
-    -- Workaround for misaligned tooltip
-    if TacoTipConfig and not TacoTipConfig.show_guild_name then
-      print(self:GetColoredText("error", L["TACOTIP_GUILD_NAME_WARNING"]));
-    end
-    -- Hook into Group finder frame
-    LogTracker:InitLogsFrame();
-    -- Hook into Group finder tooltip
-    if LFGBrowseSearchEntryTooltip then
-      hooksecurefunc("LFGBrowseSearchEntryTooltip_UpdateAndShow", function(tooltip, ...)
-        LogTracker:OnTooltipShow(tooltip, ...);
-      end);
-    end
-    -- Greet peers
-    if IsInGuild() then
-      self:SendAddonMessage("hi", nil, "GUILD");
-    end
-    if IsInRaid() then
-      self:SendAddonMessage("hi", nil, "RAID");
-    elseif IsInGroup() then
-      self:SendAddonMessage("hi", nil, "PARTY");
-    end
+    self:OnPlayerEnteringWorld(...);
   else
     self:LogDebug("OnEvent", event, ...);
   end
+end
+
+function LogTracker:OnPlayerEnteringWorld()
+  -- Cleanup player data
+  self:CleanupPlayerData();
+  -- Import app data
+  self:ImportAppData();
+  -- Workaround for misaligned tooltip
+  if TacoTipConfig and not TacoTipConfig.show_guild_name then
+    print(self:GetColoredText("error", L["TACOTIP_GUILD_NAME_WARNING"]));
+  end
+  -- Hook into Group finder frame
+  LogTracker:InitLogsFrame();
+  -- Hook into Group finder tooltip
+  if LFGBrowseSearchEntryTooltip then
+    hooksecurefunc("LFGBrowseSearchEntryTooltip_UpdateAndShow", function(tooltip, ...)
+      LogTracker:OnTooltipShow(tooltip, ...);
+    end);
+  end
+  -- Update self
+  self:CompareAchievements("player", 30);
+  -- Greet peers
+  if IsInGuild() then
+    self:SendAddonMessage("hi", nil, "GUILD");
+  end
+  if IsInRaid() then
+    self:SendAddonMessage("hi", nil, "RAID");
+  elseif IsInGroup() then
+    self:SendAddonMessage("hi", nil, "PARTY");
+  end
+  -- WCL Notice
+  self:LogOutput("Log ratings (if shown) are owned by and obtained from warcraftlogs.com. Please consider supporting them!");
 end
 
 function LogTracker:OnAddonLoaded(addonName)
@@ -717,6 +743,12 @@ function LogTracker:OnAddonLoaded(addonName)
     self.db.version = dbVersion;
   else
     self.db.playerData = self.db.playerData or {};
+  end
+  if self.db.syncSend == nil then
+    self.db.syncSend = self.defaults.syncSend;
+  end
+  if self.db.syncReceive == nil then
+    self.db.syncReceive = self.defaults.syncReceive;
   end
   if self.db.syncHistory then
     self.syncStatus.players = { unpack(self.db.syncHistory) };
@@ -738,6 +770,10 @@ function LogTracker:OnAddonLoaded(addonName)
 end
 
 function LogTracker:OnCommMessage(prefix, message, distribution, sender)
+  if not self.db.syncSend and not self.db.syncReceive then
+    return;
+  end
+  self:SyncCheck();
   if prefix ~= addonPrefixCompressed then
     return;
   end
@@ -776,6 +812,9 @@ function LogTracker:OnCommMessageDecoded(message_type, message_data, distributio
   if message_type == "hi" then
     peer.version = message_data.version or peer.version;
   elseif message_type == "pl" then
+    if not self.db.syncReceive then
+      return;
+    end
     peer.version = message_data.version or peer.version;
     for i, playerDataRcv in ipairs(message_data.players) do
       local playerData = self.db.playerData[realmName][playerDataRcv.name];
@@ -811,16 +850,22 @@ function LogTracker:OnCommMessageDecoded(message_type, message_data, distributio
       end
     end
   elseif message_type == "rq" then
+    if not self.db.syncSend then
+      return;
+    end
     peer.version = message_data.version or peer.version;
     -- Request for player data
     local amount = self:SyncSendByNames(message_data.names, distribution, sender);
-    self:LogDebug("Sync Request (base)", syncName, "Sent " .. amount .. " / " .. #message_data.names .. " players");
+    self:LogDebug("Sync v2 Request (base)", syncName, "Sent " .. amount .. " / " .. #message_data.names .. " players");
     --self:LogDebug("Sync Request (base)", unpack(message_data.names));
   elseif message_type == "rqL" then
+    if not self.db.syncSend then
+      return;
+    end
     peer.version = message_data.version or peer.version;
     -- Request for player logs
     local amount = self:SyncSendByNames(message_data.names, distribution, sender, true);
-    self:LogDebug("Sync Request (logs)", syncName, "Sent " .. amount .. " / " .. #message_data.names .. " players");
+    self:LogDebug("Sync v2 Request (logs)", syncName, "Sent " .. amount .. " / " .. #message_data.names .. " players");
     --self:LogDebug("Sync Request (logs)", unpack(message_data.names));
   end
   peer.chatReported = false;
@@ -836,6 +881,10 @@ function LogTracker:OnCommMessageDecoded(message_type, message_data, distributio
 end
 
 function LogTracker:OnChatMsgAddon(prefix, message, source, sender)
+  if not self.db.syncSend and not self.db.syncReceive then
+    return;
+  end
+  self:SyncCheck();
   if prefix ~= addonPrefix then
     return;
   end
@@ -853,6 +902,9 @@ function LogTracker:OnChatMsgAddon(prefix, message, source, sender)
     if action == "hi" or action == "hello" then
       -- New peer
     elseif action == "pl" then
+      if not self.db.syncReceive then
+        return;
+      end
       -- Player base data
       local data = tremove(parts, 1);
       if data then
@@ -882,6 +934,9 @@ function LogTracker:OnChatMsgAddon(prefix, message, source, sender)
         end
       end
     elseif action == "plE" then
+      if not self.db.syncSend then
+        return;
+      end
       -- Player encounter data
       local data = tremove(parts, 1);
       if data then
@@ -901,6 +956,9 @@ function LogTracker:OnChatMsgAddon(prefix, message, source, sender)
         end
       end
     elseif action == "plL" then
+      if not self.db.syncSend then
+        return;
+      end
       -- Player encounter data
       local data = tremove(parts, 1);
       if data then
@@ -913,7 +971,6 @@ function LogTracker:OnChatMsgAddon(prefix, message, source, sender)
             playerData.logs = {};
           end
           playerData.logs[zoneId] = { encounters, encountersKilled, allstarDataStr, encounterDataStr };
-          playerData.lastUpdateLogs = playerData.lastUpdate;
           -- Update tooltip if target is active
           local unitName, unitId = GameTooltip:GetUnit();
           if unitId and unitName and (unitName == name) then
@@ -923,17 +980,23 @@ function LogTracker:OnChatMsgAddon(prefix, message, source, sender)
         end
       end
     elseif action == "rq" then
+      if not self.db.syncSend then
+        return;
+      end
       -- Request for player data
       local data = tremove(parts, 1);
       local names = { strsplit("#", data) };
       local amount = self:SyncSendByNames(names, source, sender);
-      self:LogDebug("Sync Request (base)", syncName, "Sent " .. amount .. " / " .. #names .. " players");
+      self:LogDebug("Sync v1 Request (base)", syncName, "Sent " .. amount .. " / " .. #names .. " players");
     elseif action == "rqL" then
+      if not self.db.syncSend then
+        return;
+      end
       -- Request for player logs
       local data = tremove(parts, 1);
       local names = { strsplit("#", data) };
       local amount = self:SyncSendByNames(names, source, sender, true);
-      self:LogDebug("Sync Request (logs)", syncName, "Sent " .. amount .. " / " .. #names .. " players");
+      self:LogDebug("Sync v1 Request (logs)", syncName, "Sent " .. amount .. " / " .. #names .. " players");
     end
     peer.chatReported = false;
     peer.lastUpdate = GetTime();
@@ -1001,9 +1064,6 @@ function LogTracker:OnInspectAchievements(playerGuid)
   self.db.playerData[realmName] = self.db.playerData[realmName] or {};
   local playerName = self.achievementDetails.name;
   local playerDetails = self.db.playerData[realmName][playerName] or { encounters = {} };
-  playerDetails.class = self.achievementDetails.class;
-  playerDetails.level = self.achievementDetails.level;
-  playerDetails.faction = self.achievementDetails.faction;
   playerDetails.lastUpdate = time();
   for activityID, activityDetail in pairs(self.activityDetails) do
     if activityDetail.achivements then
@@ -1045,7 +1105,6 @@ function LogTracker:OnInspectAchievements(playerGuid)
   -- Remove from request list if present
   self:SyncRequestRemove(playerName);
   --self:LogDebug("Updated achievements for ", playerName);
-  self:SyncCheck();
   -- Update tooltip if target is active
   local unitName, unitId = GameTooltip:GetUnit();
   if unitId and unitName and (unitName == playerName) then
@@ -1063,14 +1122,17 @@ end
 
 function LogTracker:OnTargetChanged()
   self:CompareAchievements("target");
+  self:SyncCheck();
 end
 
 function LogTracker:OnMouseoverUnit()
   self:CompareAchievements("mouseover");
+  self:SyncCheck();
 end
 
 function LogTracker:OnNameplateUnitAdded(unitId)
   self:CompareAchievements(unitId);
+  self:SyncCheck();
 end
 
 function LogTracker:OnGuildRosterUpdate()
@@ -1380,6 +1442,7 @@ function LogTracker:GetPlayerData(playerFull, realmNameExplicit, classId, level,
         end
         -- Encounters
         local zoneEncounters = {};
+        local zoneEncountersKilled = 0;
         local zoneEncountersHardmodes = 0;
         local zoneEncountersArchivementsRaw = nil;
         if playerDataRaw.encounters and playerDataRaw.encounters[zoneIdSize] then
@@ -1409,6 +1472,7 @@ function LogTracker:GetPlayerData(playerFull, realmNameExplicit, classId, level,
                 zoneEncounterKills = tonumber(zoneEncounterKills);
               end
               if zoneEncounterKills > 0 then
+                zoneEncountersKilled = zoneEncountersKilled + 1;
                 zoneEncounterHmDiff = tonumber(zoneEncounterHmDiff);
                 if zoneEncounterHmDiff > 1 then
                   zoneEncountersHardmodes = zoneEncountersHardmodes + 1;
@@ -1426,7 +1490,7 @@ function LogTracker:GetPlayerData(playerFull, realmNameExplicit, classId, level,
           ['zoneName'] = zoneName,
           ['zoneEncounters'] = zonePerformance[1],
           ['hardmodes'] = zoneEncountersHardmodes,
-          ['encountersKilled'] = zonePerformance[2],
+          ['encountersKilled'] = zoneEncountersKilled,
           ['allstars'] = zoneAllstars,
           ['encounters'] = zoneEncounters
         }
@@ -1691,8 +1755,8 @@ function LogTracker:GetSyncPeer(name, noUpdate, noCreate, version)
   return self.syncStatus.peers[name];
 end
 
-function LogTracker:CompareAchievements(unitId)
-  if not UnitIsPlayer(unitId) or not CheckInteractDistance(unitId, 1) then
+function LogTracker:CompareAchievements(unitId, priority)
+  if not UnitIsPlayer(unitId) then
     return;
   end
   if self.achievementTime ~= nil then
@@ -1702,44 +1766,58 @@ function LogTracker:CompareAchievements(unitId)
     end
   end
   local realmName = GetRealmName();
+  local ownGuild = GetGuildInfo("player");
   local playerName = UnitName(unitId);
+  local playerGuild = GetGuildInfo(unitId);
+  if UnitInRaid(unitId) then
+    priority = max(priority or 10, 10);
+  end
+  if ownGuild and playerGuild and (playerGuild == ownGuild) then
+    priority = max(priority or 20, 20);
+  end
+  local _, _, classIdGame = UnitClass(unitId);
+  local classId = 0;
+  if classIdGame == 1 then
+    classId = 11; -- Warrior
+  elseif classIdGame == 2 then
+    classId = 6; -- Paladin
+  elseif classIdGame == 3 then
+    classId = 3; -- Hunter
+  elseif classIdGame == 4 then
+    classId = 8; -- Rogue
+  elseif classIdGame == 5 then
+    classId = 7; -- Priest
+  elseif classIdGame == 6 then
+    classId = 1; -- DeathKnight
+  elseif classIdGame == 7 then
+    classId = 9; -- Shaman
+  elseif classIdGame == 8 then
+    classId = 4; -- Mage
+  elseif classIdGame == 9 then
+    classId = 10; -- Warlock
+  elseif classIdGame == 11 then
+    classId = 2; -- Druid
+  end
   self.db.playerData[realmName] = self.db.playerData[realmName] or {};
   local playerDetails = self.db.playerData[realmName][playerName];
   local playerAge = playerUpdateInterval + 1;
   if playerDetails then
     playerAge = time() - playerDetails.lastUpdate;
+  else
+    playerDetails = { encounters = {}, lastUpdate = time() - playerUpdateInterval };
+    self.db.playerData[realmName][playerName] = playerDetails;
   end
-  if playerAge > playerUpdateInterval then
-    local _, _, classIdGame = UnitClass(unitId);
-    local classId = 0;
-    if classIdGame == 1 then
-      classId = 11; -- Warrior
-    elseif classIdGame == 2 then
-      classId = 6; -- Paladin
-    elseif classIdGame == 3 then
-      classId = 3; -- Hunter
-    elseif classIdGame == 4 then
-      classId = 8; -- Rogue
-    elseif classIdGame == 5 then
-      classId = 7; -- Priest
-    elseif classIdGame == 6 then
-      classId = 1; -- DeathKnight
-    elseif classIdGame == 7 then
-      classId = 9; -- Shaman
-    elseif classIdGame == 8 then
-      classId = 4; -- Mage
-    elseif classIdGame == 9 then
-      classId = 10; -- Warlock
-    elseif classIdGame == 11 then
-      classId = 2; -- Druid
-    end
+  playerDetails.class = classId;
+  playerDetails.level = UnitLevel(unitId);
+  playerDetails.faction = UnitFactionGroup(unitId);
+  if priority then
+    playerDetails.priority = priority;
+  end
+  if CheckInteractDistance(unitId, 1) and (playerAge > playerUpdateInterval) then
     self.achievementTime = GetTime();
     self.achievementUnit = unitId;
     self.achievementGuid = UnitGUID(unitId);
     self.achievementDetails.name = playerName;
-    self.achievementDetails.class = classId;
-    self.achievementDetails.level = UnitLevel(unitId);
-    self.achievementDetails.faction = UnitFactionGroup(unitId);
     ClearAchievementComparisonUnit();
     SetAchievementComparisonUnit(unitId);
   end
@@ -1800,11 +1878,13 @@ function LogTracker:ImportAppData()
       local zoneCount = 0;
       local zoneData = playerDetailsFinal.logs or {};
       for zoneIdSize, zoneRankings in pairs(playerDetails[5]) do
-        -- At least one boss down?
-        if zoneRankings[2] > 0 then
-          zoneRankings[3] = self:StringifyData(zoneRankings[3]); -- Stringify allstar data to save space
-          zoneData[zoneIdSize] = zoneRankings;
-          zoneCount = zoneCount + 1;
+        if zoneRankings[4] then
+          -- At least one boss down?
+          if zoneRankings[2] > 0 then
+            zoneRankings[3] = self:StringifyData(zoneRankings[3]); -- Stringify allstar data to save space
+            zoneData[zoneIdSize] = zoneRankings;
+            zoneCount = zoneCount + 1;
+          end
         end
       end
       if zoneCount > 0 then
@@ -1821,6 +1901,9 @@ function LogTracker:ImportAppData()
 end
 
 function LogTracker:SyncCheck()
+  if not self.db.syncSend and not self.db.syncReceive then
+    return;
+  end
   local now = GetTime();
   if self.syncStatus.throttleTimer > now then
     return;
@@ -1857,7 +1940,7 @@ function LogTracker:SyncCheck()
     self:LogDebug("SyncPeers", "Updated persistent sync history.");
     return;
   end
-  if self.syncStatus.timer < now then
+  if self.syncStatus.timer < now and self.db.syncSend then
     -- Check for pending sync data (Every 5 seconds if due and chat bandwidth available)
     self.syncStatus.timer = now + syncInterval;
     local playerCount = #(self.syncStatus.players);
@@ -1867,7 +1950,7 @@ function LogTracker:SyncCheck()
       if guildPeers > 0 and guildOffset < playerCount then
         local offset, sent = self:SyncSend("GUILD", nil, guildOffset, syncBatchPlayers, guildVersion);
         self.syncStatus.guild = offset;
-        self:LogDebug("Sync", guildPeers, "Guild", offset, "/", playerCount, " (" .. sent .. ")");
+        self:LogDebug("Sync v" .. guildVersion, guildPeers, "Guild", offset, "/", playerCount, " (" .. sent .. ")");
         return;
       end
       -- Check party
@@ -1875,7 +1958,7 @@ function LogTracker:SyncCheck()
       if partyPeers > 0 and partyOffset < playerCount then
         local offset, sent = self:SyncSend("PARTY", nil, partyOffset, syncBatchPlayers, partyVersion);
         self.syncStatus.party = offset;
-        self:LogDebug("Sync", partyPeers, "Party", offset, "/", playerCount, " (" .. sent .. ")");
+        self:LogDebug("Sync v" .. partyVersion, partyPeers, "Party", offset, "/", playerCount, " (" .. sent .. ")");
         return;
       end
       -- Check raid
@@ -1883,7 +1966,7 @@ function LogTracker:SyncCheck()
       if raidPeers > 0 and raidOffset < playerCount then
         local offset, sent = self:SyncSend("RAID", nil, raidOffset, syncBatchPlayers, raidVersion);
         self.syncStatus.party = offset;
-        self:LogDebug("Sync", raidPeers, "Raid", offset, "/", playerCount, " (" .. sent .. ")");
+        self:LogDebug("Sync v" .. raidVersion, raidPeers, "Raid", offset, "/", playerCount, " (" .. sent .. ")");
         return;
       end
       -- Check whisper
@@ -1893,7 +1976,7 @@ function LogTracker:SyncCheck()
           if peer.isWhisper and peer.syncOffset == whisperOffset and peer.syncOffset < playerCount then
             local offset, sent = self:SyncSend("WHISPER", name, peer.syncOffset, syncBatchPlayers, peer.version);
             peer.syncOffset = offset;
-            self:LogDebug("Sync", name, "Whisper", offset, "/", playerCount, " (" .. sent .. ")");
+            self:LogDebug("Sync v" .. peer.version, name, "Whisper", offset, "/", playerCount, " (" .. sent .. ")");
             return;
           end
         end
@@ -1925,7 +2008,7 @@ end
 
 function LogTracker:SyncUpdateGuild()
   if not IsInGuild() then
-    return 0, 0;
+    return 0, 0, 0;
   end
   -- Send greeting if not throttled
   self:SyncSendHello("GUILD");
@@ -1963,7 +2046,7 @@ end
 
 function LogTracker:SyncUpdateParty()
   if not IsInGroup() or IsInRaid() then
-    return 0, 0;
+    return 0, 0, 0;
   end
   -- Send greeting if not throttled
   self:SyncSendHello("PARTY");
@@ -2002,7 +2085,7 @@ end
 
 function LogTracker:SyncUpdateRaid()
   if not IsInRaid() then
-    return 0, 0;
+    return 0, 0, 0;
   end
   -- Send greeting if not throttled
   self:SyncSendHello("RAID");
@@ -2089,6 +2172,9 @@ function LogTracker:SyncRequest(name)
 end
 
 function LogTracker:SyncRequestBase(name)
+  if not self.db.syncReceive then
+    return;
+  end
   -- Check if user is already in the request list
   local requestIndex = nil;
   for i, requestName in ipairs(self.syncStatus.requests) do
@@ -2110,6 +2196,9 @@ function LogTracker:SyncRequestBase(name)
 end
 
 function LogTracker:SyncRequestLogs(name)
+  if not self.db.syncReceive then
+    return;
+  end
   -- Check if user is already in the request list
   local requestIndex = nil;
   for i, requestName in ipairs(self.syncStatus.requestsLogs) do
