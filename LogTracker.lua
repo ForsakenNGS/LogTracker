@@ -16,8 +16,9 @@ local syncBatchPlayers = 20;           -- Sync up to 20 players per batch
 local syncRequestLimit = 50;           -- Keep up to 50 players in a request list (to retrieve missing data from other clients)
 local syncRequestDelay = 10;           -- 10 seconds
 local playerUpdateInterval = 3600;     -- 1 hours
-local playerLogsInterval = 86400;       -- 1 day
+local playerLogsInterval = 86400;      -- 1 day
 local playerAgeLimit = 86400 * 21;     -- 3 weeks
+local peerAgeLimit = 86400 * 7;        -- 1 week
 
 -- Libraries
 local Comm = LibStub:GetLibrary("AceComm-3.0")
@@ -285,6 +286,7 @@ function LogTracker:Init()
   self:RegisterEvent("ADDON_LOADED");
   self:RegisterEvent("CHAT_MSG_ADDON");
   self:RegisterEvent("CHAT_MSG_SYSTEM");
+  self:RegisterEvent("CHAT_MSG_CHANNEL");
   self:RegisterEvent("MODIFIER_STATE_CHANGED");
   self:RegisterEvent("PLAYER_ENTERING_WORLD");
   self:RegisterEvent("PLAYER_TARGET_CHANGED");
@@ -579,7 +581,7 @@ end
 function LogTracker:InsertPlayerData(data, name, requireLogs)
   local realmName = GetRealmName();
   local playerData = self.db.playerData[realmName][name];
-  if playerData and (playerData.lastUpdateLogs or not requireLogs) then
+  if playerData and (playerData.class > 0) and (playerData.lastUpdateLogs or not requireLogs) then
     tinsert(data, {
       name =  name, level = playerData.level, faction = playerData.faction, class = playerData.class,
       lastUpdate = playerData.lastUpdate, lastUpdateLogs = playerData.lastUpdateLogs or playerData.lastUpdate,
@@ -593,7 +595,7 @@ end
 function LogTracker:QueuePlayerData(name, requireLogs)
   local realmName = GetRealmName();
   local playerData = self.db.playerData[realmName][name];
-  if playerData and (playerData.lastUpdateLogs or not requireLogs) then
+  if playerData and (playerData.class > 0) and (playerData.lastUpdateLogs or not requireLogs) then
     local message = name .. "#" .. playerData.level .. "#" .. playerData.faction .. "#" .. playerData.class .. "#" .. playerData.lastUpdate .. "#" .. syncVersion;
     self:QueueAddonMessage("pl", message);
     if playerData.logs then
@@ -671,6 +673,8 @@ function LogTracker:OnEvent(event, ...)
     self:OnChatMsgAddon(...);
   elseif (event == "CHAT_MSG_SYSTEM") then
     self:OnChatMsgSystem(...);
+  elseif (event == "CHAT_MSG_CHANNEL") then
+    self:OnChatMsgChannel(...);
   elseif (event == "INSPECT_ACHIEVEMENT_READY") then
     self:OnInspectAchievements(...);
   elseif (event == "PLAYER_TARGET_CHANGED") then
@@ -701,6 +705,7 @@ end
 function LogTracker:OnPlayerEnteringWorld()
   -- Cleanup player data
   self:CleanupPlayerData();
+  self:CleanupPeerData();
   -- Import app data
   self:ImportAppData();
   -- Workaround for misaligned tooltip
@@ -754,6 +759,9 @@ function LogTracker:OnAddonLoaded(addonName)
     self.syncStatus.players = { unpack(self.db.syncHistory) };
   else
     self.db.syncHistory = {};
+  end
+  if not self.db.syncPeers then
+    self.db.syncPeers = {};
   end
   self:LogDebug("Init");
   -- Init options panel
@@ -1031,6 +1039,11 @@ function LogTracker:OnChatMsgSystem(text)
   end
 end
 
+function LogTracker:OnChatMsgChannel(text, sender)
+  local playerName = strsplit("-", sender);
+  self:OnPlayerOnline(playerName);
+end
+
 function LogTracker:OnModifierStateChanged()
   if not self.db.tooltipExtension then
     return;
@@ -1155,6 +1168,23 @@ function LogTracker:OnFriendlistUpdate()
   self:SyncCheck();
 end
 
+function LogTracker:OnPlayerOnline(name) -- Called when a player is observed to be online
+  local realmName = GetRealmName();
+  local peer = self:GetSyncPeer(name, true, true);
+  if peer then
+    peer.isOnline = true;
+  else
+    if not self.db.syncPeers[realmName] then
+      self.db.syncPeers[realmName] = {};
+    end
+    if self.db.syncPeers[realmName][name] then
+      -- Had communication in the past, create peer and set as online
+      peer = self:GetSyncPeer(name, true);
+      peer.isOnline = true;
+    end
+  end
+end
+
 function LogTracker:OnLfgListSearchResultUpdated(resultID)
   -- Query all members for a lfg entry
 	local searchResultInfo = C_LFGList.GetSearchResultInfo(resultID);
@@ -1162,6 +1192,7 @@ function LogTracker:OnLfgListSearchResultUpdated(resultID)
   for i=1, numMembers do
     local name, role, classFileName, className, level, isLeader = C_LFGList.GetSearchResultMemberInfo(resultID, i);
     if name then
+      self:OnPlayerOnline(name);
       local classId = self:GetClassId(classFileName);
       self:GetPlayerData(name, nil, classId, level, true);
     end
@@ -1722,6 +1753,7 @@ function LogTracker:GetPlayerLogsEncounterPerformance(encounter, playerClass, re
 end
 
 function LogTracker:GetSyncPeer(name, noUpdate, noCreate, version)
+  local realmName = GetRealmName();
   local playerName = UnitName("player");
   if name == playerName then
     return nil;
@@ -1744,10 +1776,19 @@ function LogTracker:GetSyncPeer(name, noUpdate, noCreate, version)
     sentOverall = 0,
     version = version or 1
   };
+  -- Add/update peer history
+  if not self.db.syncPeers[realmName] then
+    self.db.syncPeers[realmName] = {};
+  end
+  if not self.db.syncPeers[realmName][name] then
+    self.db.syncPeers[realmName][name] = { lastUpdate = time() };
+  end
+  -- Update timestamps
   if not noUpdate then
     self.syncStatus.peers[name].isOnline = true;
     self.syncStatus.peers[name].chatReported = false;
     self.syncStatus.peers[name].lastSeen = GetTime();
+    self.db.syncPeers[realmName][name].lastUpdate = time();
   end
   if not self.syncStatus.peers[name].lastUpdate then
     self.syncStatus.peers[name].lastUpdate = GetTime();
@@ -1821,6 +1862,7 @@ function LogTracker:CompareAchievements(unitId, priority)
     ClearAchievementComparisonUnit();
     SetAchievementComparisonUnit(unitId);
   end
+  self:OnPlayerOnline(playerName);
 end
 
 function LogTracker:CleanupPlayerData()
@@ -1841,6 +1883,27 @@ function LogTracker:CleanupPlayerData()
     end
   end
   self:LogDebug("Player data cleanup done!", "Removed " .. removed .. " / " .. (kept + removed) .. " players.");
+  return removed, kept;
+end
+
+function LogTracker:CleanupPeerData()
+  local peerData = self.db.syncPeers;
+  local kept = 0;
+  local removed = 0;
+  self.db.syncPeers = {};
+  for realmName, peerList in pairs(peerData) do
+    self.db.syncPeers[realmName] = {};
+    for name, peerDetails in pairs(peerList) do
+      local peerAge = time() - peerDetails.lastUpdate;
+      if peerAge < peerAgeLimit then
+        self.db.syncPeers[realmName][name] = peerDetails;
+        kept = kept + 1;
+      else
+        removed = removed + 1;
+      end
+    end
+  end
+  self:LogDebug("Peer data cleanup done!", "Removed " .. removed .. " / " .. (kept + removed) .. " peers.");
   return removed, kept;
 end
 
@@ -1917,8 +1980,9 @@ function LogTracker:SyncCheck()
     return;
   end
   if (self.syncStatus.requestsTimer < now) then
-    self:SyncSendRequest();
-    return;
+    if self:SyncSendRequest() then
+      return;
+    end
   end
   self:SyncSendHello("YELL");
   if self.syncStatus.peersUpdate < now then
@@ -2025,6 +2089,7 @@ function LogTracker:SyncUpdateGuild()
     local nameFull, _, _, level, class, _, _, _, online = GetGuildRosterInfo(i);
     if nameFull then
       local name, realm = strsplit("-", nameFull);
+      self:OnPlayerOnline(name);
       local peer = self:GetSyncPeer(name, true, true);
       if peer then
         peer.isOnline = online;
@@ -2063,6 +2128,7 @@ function LogTracker:SyncUpdateParty()
     local unitId = "party" .. i;
     local name = UnitName(unitId);
     if name then
+      self:OnPlayerOnline(name);
       local peer = self:GetSyncPeer(name, true, true);
       if peer then
         peer.isOnline = UnitIsConnected(unitId);
@@ -2102,6 +2168,7 @@ function LogTracker:SyncUpdateRaid()
     local unitId = "raid" .. i;
     local name = UnitName(unitId);
     if name then
+      self:OnPlayerOnline(name);
       local peer = self:GetSyncPeer(name, true, true);
       if peer then
         peer.isOnline = UnitIsConnected(unitId);
@@ -2171,9 +2238,27 @@ function LogTracker:SyncRequest(name)
   self:SyncRequestLogs(name);
 end
 
+function LogTracker:SyncRequestCheck(name)
+  local playerName, realmName = strsplit("-", name);
+  if not realmName then
+    realmName = GetRealmName();
+  end
+  self.db.playerData[realmName] = self.db.playerData[realmName] or {};
+  local playerDataRaw = self.db.playerData[realmName][playerName];
+  if playerDataRaw then
+    if (playerDataRaw.level > 0) and (playerDataRaw.level > 80) then
+      return false;
+    end
+  end
+  return true;
+end
+
 function LogTracker:SyncRequestBase(name)
   if not self.db.syncReceive then
     return;
+  end
+  if not self:SyncRequestCheck(name) then
+    return; -- Do not request players below level 80
   end
   -- Check if user is already in the request list
   local requestIndex = nil;
@@ -2198,6 +2283,9 @@ end
 function LogTracker:SyncRequestLogs(name)
   if not self.db.syncReceive then
     return;
+  end
+  if not self:SyncRequestCheck(name) then
+    return; -- Do not request players below level 80
   end
   -- Check if user is already in the request list
   local requestIndex = nil;
@@ -2459,6 +2547,7 @@ function LogTracker:SyncSendRequest()
     -- Clear request timer
     local ratio = 1 - min(requestCount, requestLimit) / requestLimit;
     self.syncStatus.requestsTimer = GetTime() + syncRequestDelay * ratio;
+    return true;
   end
 end
 
