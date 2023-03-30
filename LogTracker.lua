@@ -648,7 +648,7 @@ function LogTracker:FlushAddonMessages(type, target, prio)
 end
 
 function LogTracker:AddPlayerInfoToTooltip(targetName)
-  local playerData, playerName, playerRealm = self:GetPlayerData(targetName);
+  local playerData, playerName, playerRealm = self:GetPlayerData(targetName, nil, nil, nil, true);
   if playerData then
     self:SetPlayerInfoTooltip(playerData, playerName, playerRealm);
   end
@@ -1097,8 +1097,11 @@ function LogTracker:OnTooltipSetUnit(tooltip, ...)
   if not unitId or not UnitIsPlayer(unitId) then
     return;
   end
+  local _, _, classIdGame = UnitClass(unitId);
+  local classId = self:GetWclClassId(classIdGame);
   local unitName, unitRealm = UnitName(unitId);
-  local playerData, playerName, playerRealm = self:GetPlayerData(unitName, unitRealm);
+  local unitLevel = UnitLevel(unitId);
+  local playerData, playerName, playerRealm = self:GetPlayerData(unitName, unitRealm, classId, unitLevel, true);
   if playerData then
     self:SetPlayerInfoTooltip(playerData, playerName, playerRealm);
   end
@@ -1282,7 +1285,7 @@ function LogTracker:OnTooltipShow_LFGPlayer(tooltip, resultID)
   local playerLine = tooltip.Leader.Name:GetText();
   local playerNameTooltip = strsplit("-", playerLine);
   playerNameTooltip = strtrim(playerNameTooltip);
-  local playerData, playerName, playerRealm = self:GetPlayerData(playerNameTooltip);
+  local playerData, playerName, playerRealm = self:GetPlayerData(playerNameTooltip, nil, nil, nil, true);
   if playerData then
     -- Add instance top rank for leader
     if not tooltip.Leader.Logs then
@@ -1318,7 +1321,7 @@ function LogTracker:OnTooltipShow_LFGMember(frame, logTargets)
     frame.Logs:SetPoint("TOPLEFT", frame.Role, "TOPRIGHT", 32, -2)
   end
   local memberName = frame.Name:GetText();
-  local playerData, playerName, playerRealm = self:GetPlayerData(memberName);
+  local playerData, playerName, playerRealm = self:GetPlayerData(memberName, nil, nil, nil, true);
   if playerData then
     frame.Logs:SetText(self:GetPlayerOverallPerformance(playerData, logTargets));
   else
@@ -1485,179 +1488,147 @@ function LogTracker:GetPlayerData(playerFull, realmNameExplicit, classId, level,
   self.db.playerData[realmName] = self.db.playerData[realmName] or {};
   local playerDataRaw = self.db.playerData[realmName][playerName];
   if playerDataRaw then
+    -- Group data by zone
+    local characterZones = {};
     if playerDataRaw.logs then
-      -- Read actual log data
-      local zoneCount = 0;
-      local logData = playerDataRaw.logs;
-      local characterPerformance = {};
-      for zoneIdSize, zonePerformance in pairs(logData) do
-        local zoneId, zoneSize = strsplit("-", zoneIdSize);
-        zoneId = tonumber(zoneId);
-        zoneSize = tonumber(zoneSize);
-        zoneCount = zoneCount + 1;
-        -- Zone name
-        local zoneName = "Unknown ("..zoneSize..")";
-        if LogTracker_BaseData.zoneNames and LogTracker_BaseData.zoneNames[zoneId] then
-          zoneName = LogTracker_BaseData.zoneNames[zoneId]['name'].." ("..zoneSize..")";
-        end
-        -- Allstars rankings
-        local zoneAllstars = {};
-        local zoneAllstarsRaw = self:UnstringifyData(zonePerformance[3]);
-        for _, zoneAllstarsEntry in ipairs(zoneAllstarsRaw) do
-          tinsert(zoneAllstars, {
+      for zoneIdSize, zonePerformance in pairs(playerDataRaw.logs) do
+        characterZones[zoneIdSize] = characterZones[zoneIdSize] or { count = 0, hardmodes = 0 };
+        characterZones[zoneIdSize].logs = {
+          encountersOverall = tonumber(zonePerformance[1]), encountersLogged = tonumber(zonePerformance[2]),
+          allstars = {}, ratings = {}
+        };
+        local allstarsRaw = self:UnstringifyData(zonePerformance[3]);
+        for _, zoneAllstarsEntry in ipairs(allstarsRaw) do
+          tinsert(characterZones[zoneIdSize].logs.allstars, {
             ['spec'] = tonumber(zoneAllstarsEntry[1]),
             ['percentRank'] = zoneAllstarsEntry[2]
           });
         end
-        -- Encounters
-        local zoneEncounters = {};
-        local zoneEncountersKilled = 0;
-        local zoneEncountersHardmodes = 0;
-        local zoneEncountersArchivementsRaw = nil;
-        if playerDataRaw.encounters and playerDataRaw.encounters[zoneIdSize] then
-          zoneEncountersArchivementsRaw = { strsplit("/", playerDataRaw.encounters[zoneIdSize]) };
-        end
         if zonePerformance[4] ~= "" then
           local zoneEncountersRaw = self:UnstringifyData(zonePerformance[4]);
+          characterZones[zoneIdSize].count = max(characterZones[zoneIdSize].count, #zoneEncountersRaw);
           for zoneEncounterIndex, zoneEncountersEntry in ipairs(zoneEncountersRaw) do
-            local zoneEncounterData = {
-              ['spec'] = tonumber(zoneEncountersEntry[1] or 0),
-              ['encounter'] = LogTracker_BaseData.zoneEncounters[zoneId][zoneEncounterIndex],
-              ['percentRank'] = tonumber(zoneEncountersEntry[2] or 0),
-              ['percentMedian'] = tonumber(zoneEncountersEntry[3] or 0),
-              ['kills'] = 0,
-              ['hardmode'] = "",
-              ['hardmodeDiff'] = 0
-            };
-            if zoneEncountersArchivementsRaw and zoneEncountersArchivementsRaw[zoneEncounterIndex] then
-              -- Add hardmode data
-              local zoneEncounterRaw = zoneEncountersArchivementsRaw[zoneEncounterIndex];
-              local zoneEncounterKills, zoneEncounterHmDiff, zoneEncounterHmLabel = strsplit(",", zoneEncounterRaw);
-              if zoneEncounterRaw == "" then
-                zoneEncounterKills = 0;
-                zoneEncounterHmDiff = 0;
-                zoneEncounterHmLabel = "Easy";
-              else
-                zoneEncounterKills = tonumber(zoneEncounterKills);
-              end
-              if zoneEncounterKills > 0 then
-                zoneEncountersKilled = zoneEncountersKilled + 1;
-                zoneEncounterHmDiff = tonumber(zoneEncounterHmDiff);
-                if zoneEncounterHmDiff > 1 then
-                  zoneEncountersHardmodes = zoneEncountersHardmodes + 1;
-                end
-              elseif zoneEncounterData["percentRank"] > 0 then
-                zoneEncountersKilled = zoneEncountersKilled + 1;
-              end
-              zoneEncounterData['kills'] = zoneEncounterKills;
-              zoneEncounterData['hardmode'] = self:GetColoredText("hardmode" .. zoneEncounterHmDiff, zoneEncounterHmLabel);
-              zoneEncounterData['hardmodeDiff'] = zoneEncounterHmDiff;
-            elseif zoneEncounterData["percentRank"] > 0 then
-              zoneEncountersKilled = zoneEncountersKilled + 1;
-            end
-            tinsert(zoneEncounters, zoneEncounterData);
+            tinsert(characterZones[zoneIdSize].logs.ratings, {
+              spec = tonumber(zoneEncountersEntry[1] or 0),
+              percentRank = tonumber(zoneEncountersEntry[2] or 0),
+              percentMedian = tonumber(zoneEncountersEntry[3] or 0)
+            });
           end
         end
-        -- Zone details
-        characterPerformance[zoneIdSize] = {
-          ['zoneName'] = zoneName,
-          ['zoneEncounters'] = zonePerformance[1],
-          ['hardmodes'] = zoneEncountersHardmodes,
-          ['encountersKilled'] = zoneEncountersKilled,
-          ['allstars'] = zoneAllstars,
-          ['encounters'] = zoneEncounters
-        }
       end
-      -- Character details
-      characterData = {
-        ['level'] = playerDataRaw.level,
-        ['faction'] = playerDataRaw.faction,
-        ['class'] = tonumber(playerDataRaw.class),
-        ['last_update'] = playerDataRaw.lastUpdateLogs,
-        ['logs'] = characterPerformance,
-      };
-      local characterLogsAge = GetTime() - playerDataRaw.lastUpdateLogs;
-      if characterLogsAge > playerLogsInterval then
-        -- Data older than desired, request update
-        self:SyncRequestLogs(playerName);
-      end
-      if zoneCount > 0 then
-        return characterData, playerName, realmName;
-      elseif rescanMissing then
-        -- No log data available, request and force rescan
-        playerDataRaw.lastUpdateLogs = 0;
-        self:SyncRequestLogs(playerName);
-      end
-    else
-      self:SyncRequestLogs(playerName);
     end
-    -- Read progress based on archivements
+    if playerDataRaw.encounters then
+      for zoneIdSize, zonePerformance in pairs(playerDataRaw.encounters) do
+        characterZones[zoneIdSize] = characterZones[zoneIdSize] or { count = 0, hardmodes = 0 };
+        characterZones[zoneIdSize].encounters = {};
+        local zoneEncountersRaw = { strsplit("/", zonePerformance) };
+        characterZones[zoneIdSize].count = max(characterZones[zoneIdSize].count, #zoneEncountersRaw);
+        for zoneEncounterIndex, zoneEncounterRaw in ipairs(zoneEncountersRaw) do
+          if zoneEncounterRaw == "" then
+            tinsert(characterZones[zoneIdSize].encounters, {
+              kills = 0,
+              hardmode = "not down",
+              hardmodeDiff = 0
+            });
+          else
+            local zoneEncounterKills, zoneEncounterHmDiff, zoneEncounterHmLabel = strsplit(",", zoneEncounterRaw);
+            zoneEncounterKills = tonumber(zoneEncounterKills);
+            if zoneEncounterKills > 0 then
+              zoneEncounterHmDiff = tonumber(zoneEncounterHmDiff);
+              if zoneEncounterHmDiff > 1 then
+                characterZones[zoneIdSize].hardmodes = characterZones[zoneIdSize].hardmodes + 1;
+              end
+            else
+              zoneEncounterHmDiff = 0;
+            end
+            tinsert(characterZones[zoneIdSize].encounters, {
+              kills = zoneEncounterKills,
+              hardmode = self:GetColoredText("hardmode" .. zoneEncounterHmDiff, zoneEncounterHmLabel),
+              hardmodeDiff = zoneEncounterHmDiff
+            });
+          end
+        end
+      end
+    end
+    -- Generate optimized data
     local characterPerformance = {};
-    for zoneIdSize, zonePerformance in pairs(playerDataRaw.encounters) do
+    local characterLogs = 0;
+    local characterKills = 0;
+    for zoneIdSize, zoneData in pairs(characterZones) do
       local zoneId, zoneSize = strsplit("-", zoneIdSize);
       zoneId = tonumber(zoneId);
       zoneSize = tonumber(zoneSize);
-      -- Activity defails
-      local activityDetail, activityID = self:GetActivityByZoneId(zoneId, zoneSize);
       -- Zone name
-      local zoneName = "Unknown (" .. zoneSize .. ")";
+      local zoneName = "Unknown ("..zoneSize..")";
       if LogTracker_BaseData.zoneNames and LogTracker_BaseData.zoneNames[zoneId] then
-        zoneName = LogTracker_BaseData.zoneNames[zoneId]['name'] .. " (" .. zoneSize .. ")";
+        zoneName = LogTracker_BaseData.zoneNames[zoneId]['name'].." ("..zoneSize..")";
+      end
+      -- Allstars rankings
+      local zoneAllstars = {};
+      if zoneData.logs then
+        zoneAllstars = zoneData.logs.allstars;
       end
       -- Encounters
       local zoneEncounters = {};
-      local zoneEncountersRaw = { strsplit("/", zonePerformance) };
       local zoneEncountersKilled = 0;
-      local zoneEncountersHardmodes = 0;
-      for zoneEncounterIndex, zoneEncounterRaw in ipairs(zoneEncountersRaw) do
-        local zoneEncounterKills, zoneEncounterHmDiff, zoneEncounterHmLabel = strsplit(",", zoneEncounterRaw);
-        local hardmodes = 0;
-        if activityDetail and activityDetail.encounters[zoneEncounterIndex] then
-          local zoneEncounterId = tonumber(activityDetail.encounters[zoneEncounterIndex]);
-          hardmodes = #(activityDetail.achivements[zoneEncounterId].hardmodes);
+      for zoneEncounterIndex = 1, zoneData.count do
+        local encounterData = LogTracker_BaseData.zoneEncounters[zoneId][zoneEncounterIndex];
+        local zoneEncounterData = {
+          spec = 0, percentRank = 0, percentMedian = 0,
+          kills = 0, hardmode = "", hardmodeDiff = 0,
+          encounter = LogTracker_BaseData.zoneEncounters[zoneId][zoneEncounterIndex]
+        };
+        if zoneData.logs and zoneData.logs.ratings[zoneEncounterIndex] then
+          local zoneEncounterRating = zoneData.logs.ratings[zoneEncounterIndex];
+          zoneEncounterData.spec = zoneEncounterRating.spec;
+          zoneEncounterData.percentRank = zoneEncounterRating.percentRank;
+          zoneEncounterData.percentMedian = zoneEncounterRating.percentMedian;
+          characterLogs = characterLogs + 1;
         end
-        if zoneEncounterRaw == "" then
-          zoneEncounterKills = 0;
-          zoneEncounterHmDiff = 0;
-          zoneEncounterHmLabel = "Easy";
-        else
-          zoneEncounterKills = tonumber(zoneEncounterKills);
+        if zoneData.encounters and zoneData.encounters[zoneEncounterIndex] then
+          local zoneEncounterProgress = zoneData.encounters[zoneEncounterIndex];
+          zoneEncounterData.kills = zoneEncounterProgress.kills;
+          zoneEncounterData.hardmode = zoneEncounterProgress.hardmode;
+          zoneEncounterData.hardmodeDiff = zoneEncounterProgress.hardmodeDiff;
         end
-        if zoneEncounterKills > 0 then
+        if zoneEncounterData.percentRank > 0 or zoneEncounterData.kills > 0 then
           zoneEncountersKilled = zoneEncountersKilled + 1;
-          zoneEncounterHmDiff = tonumber(zoneEncounterHmDiff);
-          if zoneEncounterHmDiff > 1 then
-            zoneEncountersHardmodes = zoneEncountersHardmodes + 1;
-          elseif hardmodes == 0 then
-            zoneEncounterHmDiff = 2;
-            zoneEncounterHmLabel = "Down";
-          end
         end
-        tinsert(zoneEncounters, {
-          ['encounter'] = LogTracker_BaseData.zoneEncounters[zoneId][zoneEncounterIndex],
-          ['kills'] = zoneEncounterKills,
-          ['hardmode'] = self:GetColoredText("hardmode" .. zoneEncounterHmDiff, zoneEncounterHmLabel),
-          ['hardmodeDiff'] = zoneEncounterHmDiff
-        });
+        tinsert(zoneEncounters, zoneEncounterData);
       end
       -- Zone details
       characterPerformance[zoneIdSize] = {
         ['zoneName'] = zoneName,
-        ['zoneEncounters'] = #(LogTracker_BaseData.zoneEncounters[zoneId]),
-        ['hardmodes'] = zoneEncountersHardmodes,
+        ['zoneEncounters'] = zoneData.count,
+        ['hardmodes'] = zoneData.hardmodes,
         ['encountersKilled'] = zoneEncountersKilled,
+        ['allstars'] = zoneAllstars,
         ['encounters'] = zoneEncounters
-      };
+      }
+      characterKills = characterKills + zoneEncountersKilled;
     end
     -- Character details
     characterData = {
       ['level'] = playerDataRaw.level,
       ['faction'] = playerDataRaw.faction,
       ['class'] = tonumber(playerDataRaw.class),
-      ['last_update'] = playerDataRaw.lastUpdate,
-      ['performance'] = characterPerformance,
+      ['last_update'] = playerDataRaw.lastUpdateLogs or playerDataRaw.lastUpdate,
+      ['logs'] = characterPerformance,
     };
+    local characterLogsAge = GetTime() - (playerDataRaw.lastUpdateLogs or 0);
+    if characterLogsAge > playerLogsInterval then
+      -- Data older than desired, request update
+      self:SyncRequestLogs(playerName);
+    elseif (characterKills > 0 and characterLogs == 0) then
+      -- No logs present despite kills tracked, request update and queue update (if desired)
+      self:SyncRequestLogs(playerName);
+      if rescanMissing and (playerDataRaw.lastUpdateLogs or 0) > 0 then
+        playerDataRaw.lastUpdateLogs = 0;
+        self:LogDebug("Queued rescan for player ", playerName)
+      end
+    end
   else
+    -- No character data available
     self:SyncRequest(playerName);
     if classId then
       self.db.playerData[realmName][playerName] = {
@@ -1838,27 +1809,7 @@ function LogTracker:GetSyncPeer(name, noUpdate, noCreate, version)
   return self.syncStatus.peers[name];
 end
 
-function LogTracker:CompareAchievements(unitId, priority)
-  if not UnitIsPlayer(unitId) then
-    return;
-  end
-  if self.achievementTime ~= nil then
-    local timeGone = GetTime() - self.achievementTime;
-    if (timeGone < 10) then
-      return;
-    end
-  end
-  local realmName = GetRealmName();
-  local ownGuild = GetGuildInfo("player");
-  local playerName = UnitName(unitId);
-  local playerGuild = GetGuildInfo(unitId);
-  if UnitInRaid(unitId) then
-    priority = max(priority or 10, 10);
-  end
-  if ownGuild and playerGuild and (playerGuild == ownGuild) then
-    priority = max(priority or 20, 20);
-  end
-  local _, _, classIdGame = UnitClass(unitId);
+function LogTracker:GetWclClassId(classIdGame)
   local classId = 0;
   if classIdGame == 1 then
     classId = 11; -- Warrior
@@ -1881,6 +1832,31 @@ function LogTracker:CompareAchievements(unitId, priority)
   elseif classIdGame == 11 then
     classId = 2; -- Druid
   end
+  return classId;
+end
+
+function LogTracker:CompareAchievements(unitId, priority)
+  if not UnitIsPlayer(unitId) then
+    return;
+  end
+  if self.achievementTime ~= nil then
+    local timeGone = GetTime() - self.achievementTime;
+    if (timeGone < 10) then
+      return;
+    end
+  end
+  local realmName = GetRealmName();
+  local ownGuild = GetGuildInfo("player");
+  local playerName = UnitName(unitId);
+  local playerGuild = GetGuildInfo(unitId);
+  if UnitInRaid(unitId) then
+    priority = max(priority or 10, 10);
+  end
+  if ownGuild and playerGuild and (playerGuild == ownGuild) then
+    priority = max(priority or 20, 20);
+  end
+  local _, _, classIdGame = UnitClass(unitId);
+  local classId = self:GetWclClassId(classIdGame);
   self.db.playerData[realmName] = self.db.playerData[realmName] or {};
   local playerDetails = self.db.playerData[realmName][playerName];
   local playerAge = playerUpdateInterval + 1;
@@ -1983,7 +1959,7 @@ function LogTracker:ImportAppData()
       local zoneCount = 0;
       local zoneData = playerDetailsFinal.logs or {};
       for zoneIdSize, zoneRankings in pairs(playerDetails[5]) do
-        if zoneRankings[4] then
+        if zoneRankings[4] and type(zoneRankings[3]) == "table" then
           -- At least one boss down?
           if zoneRankings[2] > 0 then
             zoneRankings[3] = self:StringifyData(zoneRankings[3]); -- Stringify allstar data to save space
