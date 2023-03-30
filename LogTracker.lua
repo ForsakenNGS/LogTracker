@@ -777,6 +777,10 @@ function LogTracker:OnAddonLoaded(addonName)
   end
   -- Register addon prefix
   C_ChatInfo.RegisterAddonMessagePrefix(addonPrefix);
+  -- Filter system messages
+  ChatFrame_AddMessageEventFilter("CHAT_MSG_SYSTEM", function(...)
+    return LogTracker:OnChatMsgSystemFilter(...);
+  end)
 end
 
 function LogTracker:OnCommMessage(prefix, message, distribution, sender)
@@ -1059,13 +1063,6 @@ function LogTracker:OnChatMsgSystem(text)
   if not self.db.chatExtension then
     return;
   end
-  local offlineName = strmatch(text, gsub(ERR_CHAT_PLAYER_NOT_FOUND_S, "%%s", "(.+)"));
-  if offlineName then
-    local peer = self:GetSyncPeer(offlineName, true, true);
-    if peer then
-      peer.isOnline = false;
-    end
-  end
   local _, _, name, linkText = string.find(text, "|Hplayer:([^:]*)|h%[([^%[%]]*)%]?|h");
   if name then
     local playerData, playerName, playerRealm = self:GetPlayerData(name);
@@ -1073,6 +1070,18 @@ function LogTracker:OnChatMsgSystem(text)
       self:SendPlayerInfoToChat(playerData, playerName, playerRealm);
     end
   end
+end
+
+function LogTracker:OnChatMsgSystemFilter(_, _, text)
+  local offlineName = strmatch(text, gsub(ERR_CHAT_PLAYER_NOT_FOUND_S, "%%s", "(.+)"));
+  if offlineName then
+    local peer = self:GetSyncPeer(offlineName, true, true);
+    if peer then
+      peer.isOnline = false;
+      return true;
+    end
+  end
+  return false;
 end
 
 function LogTracker:OnChatMsgChannel(text, sender)
@@ -1412,20 +1421,20 @@ function LogTracker:GetColoredProgress(done, overall)
   end
 end
 
-function LogTracker:GetColoredPercent(value)
+function LogTracker:GetColoredPercent(value, muted)
   value = floor(value);
   if (value >= 99) then
-    return "|cffe268a8" .. value .. "|r";
+    return (muted and "|cff7b375b" or "|cffe268a8") .. value .. "|r";
   elseif (value >= 95) then
-    return "|cffffa000" .. value .. "|r";
+    return (muted and "|cff805000" or "|cffff8000") .. value .. "|r";
   elseif (value >= 75) then
-    return "|cffdd60ff" .. value .. "|r";
+    return (muted and "|cff561a80" or "|cffa335ee") .. value .. "|r";
   elseif (value >= 50) then
-    return "|cff6060ff" .. value .. "|r";
+    return (muted and "|cff303888" or "|cff0070ff") .. value .. "|r";
   elseif (value >= 25) then
-    return "|cff00d000" .. value .. "|r";
+    return (muted and "|cff0f8800" or "|cff1eff00") .. value .. "|r";
   else
-    return "|cff808080" .. value .. "|r";
+    return (muted and "|cff606060" or "|cff808080") .. value .. "|r";
   end
 end
 
@@ -1656,15 +1665,30 @@ function LogTracker:GetPlayerOverallPerformance(playerData, logTargets)
         end
         if not logTargets or (targetEncounters and tContains(targetEncounters, encounterData['encounter']['id'])) then
           -- logTargets is either nil (include every encounter) or it contains the given encounter
-          logScoreValue = logScoreValue + encounterData['percentRank'];
-          logScoreCount = logScoreCount + 1;
+          if encounterData['percentRank'] > 0 then
+            logScoreValue = logScoreValue + encounterData['percentRank'];
+            logScoreCount = logScoreCount + 1;
+          end
         end
       end
     end
     if (logScoreCount > 0) then
       return self:GetColoredPercent(logScoreValue / logScoreCount);
     else
-      return self:GetColoredText("muted", "--");
+      -- Fallback for overall average
+      for zoneId, zoneData in pairs(playerData["logs"]) do
+        for _, encounterData in ipairs(zoneData['encounters']) do
+          if encounterData['percentRank'] > 0 then
+            logScoreValue = logScoreValue + encounterData['percentRank'];
+            logScoreCount = logScoreCount + 1;
+          end
+        end
+      end
+      if (logScoreCount > 0) then
+        return self:GetColoredPercent(logScoreValue / logScoreCount, true);
+      else
+        return self:GetColoredText("muted", "--");
+      end
     end
   end
   -- Archivement progression
@@ -1893,6 +1917,12 @@ function LogTracker:CleanupPlayerData()
     for name, playerDetails in pairs(playerList) do
       local playerAge = time() - playerDetails.lastUpdate;
       if playerAge < playerAgeLimit then
+        if type(playerDetails.class) == "string" then
+          playerDetails.class = tonumber(playerDetails.class);
+        end
+        if type(playerDetails.level) == "string" then
+          playerDetails.level = tonumber(playerDetails.level);
+        end
         self.db.playerData[realmName][name] = playerDetails;
         kept = kept + 1;
       else
