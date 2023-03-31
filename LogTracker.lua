@@ -391,6 +391,26 @@ function LogTracker:InitLogsFrame()
   LFGBrowseFrame:HookScript("OnHide", function()
     self.warcraftlogsFrame:Hide();
   end);
+  hooksecurefunc("LFGBrowseSearchEntry_Update", function(frame)
+    if not frame.Logs then
+      frame.Logs = frame:CreateFontString(nil, "ARTWORK", "GameFontNormal");
+      frame.Logs:SetPoint("TOPLEFT", frame, "TOPRIGHT", -28, -13)
+    end
+    local searchResultInfo = C_LFGList.GetSearchResultInfo(frame.resultID);
+    local isSolo = searchResultInfo.numMembers == 1;
+    if isSolo then
+      local logTargets = self:GetGroupFinderLogTargets(searchResultInfo);
+      local playerData, playerName, playerRealm = self:GetPlayerData(searchResultInfo.leaderName, nil, nil, nil, true);
+      if playerData then
+        frame.Logs:SetText(self:GetPlayerOverallPerformance(playerData, logTargets));
+      else
+        frame.Logs:SetText(self:GetColoredText("muted", "--"));
+      end
+      frame.Logs:Show();
+    else
+      frame.Logs:Hide();
+    end
+  end);
   hooksecurefunc("LFGBrowseSearchEntry_OnClick", function(lfg, button)
     local searchResultInfo = C_LFGList.GetSearchResultInfo(lfg.resultID);
     local numMembers = searchResultInfo.numMembers;
@@ -1268,30 +1288,14 @@ function LogTracker:OnTooltipShow(tooltip, ...)
 end
 
 function LogTracker:OnTooltipShow_LFGPlayer(tooltip, resultID)
-  local logTargets = nil;
   local searchResultInfo = C_LFGList.GetSearchResultInfo(resultID);
-  if #searchResultInfo.activityIDs > 0 then
-    for i, activityID in ipairs(searchResultInfo.activityIDs) do
-      local activityDetails = self.activityDetails[activityID];
-      if activityDetails then
-        local activityKey = activityDetails.zone .. "-" .. activityDetails.size;
-        if not logTargets then
-          logTargets = {};
-        end
-        if not logTargets[activityKey] then
-          logTargets[activityKey] = {};
-        end
-        for e, encounterID in ipairs(activityDetails.encounters) do
-          if not tContains(logTargets[activityKey], encounterID) then
-            tinsert(logTargets[activityKey], encounterID);
-          end
-        end
-      end
-    end
-  end
+  local logTargets = self:GetGroupFinderLogTargets(searchResultInfo);
   -- Tooltip for lead / single player
   local tooltipName = tooltip:GetName();
   local playerLine = tooltip.Leader.Name:GetText();
+  if playerLine == nil then
+    return;
+  end
   local playerNameTooltip = strsplit("-", playerLine);
   playerNameTooltip = strtrim(playerNameTooltip);
   local playerData, playerName, playerRealm = self:GetPlayerData(playerNameTooltip, nil, nil, nil, true);
@@ -1833,6 +1837,30 @@ function LogTracker:GetSyncPeer(name, noUpdate, noCreate, version)
   return self.syncStatus.peers[name];
 end
 
+function LogTracker:GetGroupFinderLogTargets(searchResultInfo)
+  local logTargets = nil;
+  if #searchResultInfo.activityIDs > 0 then
+    for i, activityID in ipairs(searchResultInfo.activityIDs) do
+      local activityDetails = self.activityDetails[activityID];
+      if activityDetails then
+        local activityKey = activityDetails.zone .. "-" .. activityDetails.size;
+        if not logTargets then
+          logTargets = {};
+        end
+        if not logTargets[activityKey] then
+          logTargets[activityKey] = {};
+        end
+        for e, encounterID in ipairs(activityDetails.encounters) do
+          if not tContains(logTargets[activityKey], encounterID) then
+            tinsert(logTargets[activityKey], encounterID);
+          end
+        end
+      end
+    end
+  end
+  return logTargets;
+end
+
 function LogTracker:GetWclClassId(classIdGame)
   local classId = 0;
   if classIdGame == 1 then
@@ -1913,7 +1941,8 @@ function LogTracker:CleanupPlayerData()
   local removed = 0;
   self.db.playerData = {};
   for realmName, playerList in pairs(playerData) do
-    self.db.playerData[realmName] = {};
+    local realmPlayers = {};
+    local realmCount = 0;
     for name, playerDetails in pairs(playerList) do
       local playerAge = time() - playerDetails.lastUpdate;
       if playerAge < playerAgeLimit then
@@ -1923,11 +1952,15 @@ function LogTracker:CleanupPlayerData()
         if type(playerDetails.level) == "string" then
           playerDetails.level = tonumber(playerDetails.level);
         end
-        self.db.playerData[realmName][name] = playerDetails;
+        realmPlayers[name] = playerDetails;
         kept = kept + 1;
+        realmCount = realmCount + 1;
       else
         removed = removed + 1;
       end
+    end
+    if realmCount > 0 then
+      self.db.playerData[realmName] = realmPlayers;
     end
   end
   self:LogDebug("Player data cleanup done!", "Removed " .. removed .. " / " .. (kept + removed) .. " players.");
@@ -2139,7 +2172,9 @@ function LogTracker:SyncUpdateGuild(no_yell)
     local nameFull, _, _, level, class, _, _, _, online = GetGuildRosterInfo(i);
     if nameFull then
       local name, realm = strsplit("-", nameFull);
-      self:OnPlayerOnline(name);
+      if online then
+        self:OnPlayerOnline(name);
+      end
       local peer = self:GetSyncPeer(name, true, true);
       if peer then
         peer.isOnline = online;
