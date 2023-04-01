@@ -19,6 +19,7 @@ local playerUpdateInterval = 3600;     -- 1 hours
 local playerLogsInterval = 86400;      -- 1 day
 local playerAgeLimit = 86400 * 21;     -- 3 weeks
 local peerAgeLimit = 86400 * 7;        -- 1 week
+local appQueueUpdateInterval = 10;     -- 10 seconds
 
 -- Libraries
 local Comm = LibStub:GetLibrary("AceComm-3.0")
@@ -37,7 +38,9 @@ function LogTracker:Init()
     hide10Player = false,
     hide25Player = false,
     syncSend = true,
-    syncReceive = true
+    syncReceive = true,
+    appImportCount = 0,
+    appPriorityOnly = false
   };
   self.syncStatus = {
     guild = 0,
@@ -69,6 +72,7 @@ function LogTracker:Init()
     messageLength = 0,
     throttleTimer = GetTime() + startupDelay,
   };
+  self.appSyncStatusTime = time();
   self.versionNoticeSent = false;
   self.achievementTime = nil;
   self.achievementGuid = nil;
@@ -391,6 +395,19 @@ function LogTracker:InitLogsFrame()
   LFGBrowseFrame:HookScript("OnHide", function()
     self.warcraftlogsFrame:Hide();
   end);
+  -- Show due app updates
+  if self.db.appImportCount > 0 then
+    self.appSyncStatus = LFGBrowseFrame:CreateFontString(nil, "ARTWORK", "GameFontNormalSmallLeft");
+    self.appSyncStatus:SetPoint("TOPLEFT", LFGBrowseFrame, "TOPLEFT", 74, -50);
+    self.appSyncStatus:SetText("");
+    self.appSyncStatus:Show();
+    self.appSyncHelp = LFGBrowseFrame:CreateFontString(nil, "ARTWORK", "GameFontNormalSmallLeft");
+    self.appSyncHelp:SetPoint("TOPLEFT", LFGBrowseFrame, "TOPLEFT", 54, -72);
+    self.appSyncHelp:SetText("|cffa0a0a0Do a /reload to start updating / import results|r");
+    self.appSyncHelp:Show();
+    self:UpdateAppQueue();
+  end
+  -- Show logs within the group finder
   hooksecurefunc("LFGBrowseSearchEntry_Update", function(frame)
     if not frame.Logs then
       frame.Logs = frame:CreateFontString(nil, "ARTWORK", "GameFontNormal");
@@ -524,9 +541,18 @@ function LogTracker:InitOptions()
     self.db.syncReceive = self.optionSyncReceive:GetChecked();
   end)
   self.optionSyncReceive:SetChecked(self.db.syncReceive);
+  -- Only update prioritized players
+  self.optionAppPriorityOnly = CreateFrame("CheckButton", nil, self.optionsPanel, "InterfaceOptionsCheckButtonTemplate");
+  self.optionAppPriorityOnly:SetPoint("TOPLEFT", 20, -180);
+  self.optionAppPriorityOnly.Text:SetText(L["OPTION_APP_PRIORITY_ONLY"]);
+  self.optionAppPriorityOnly:SetScript("OnClick", function(_, value)
+    self.db.appPriorityOnly = self.optionAppPriorityOnly:GetChecked();
+  end)
+  self.optionAppPriorityOnly:SetChecked(self.db.appPriorityOnly or false);
+  
   -- Debug output
   self.optionShowDebug = CreateFrame("CheckButton", nil, self.optionsPanel, "InterfaceOptionsCheckButtonTemplate");
-  self.optionShowDebug:SetPoint("TOPLEFT", 20, -180);
+  self.optionShowDebug:SetPoint("TOPLEFT", 20, -200);
   self.optionShowDebug.Text:SetText(L["OPTION_SHOW_DEBUG"]);
   self.optionShowDebug:SetScript("OnClick", function(_, value)
     self.db.debug = self.optionShowDebug:GetChecked();
@@ -725,11 +751,6 @@ function LogTracker:OnEvent(event, ...)
 end
 
 function LogTracker:OnPlayerEnteringWorld()
-  -- Cleanup player data
-  self:CleanupPlayerData();
-  self:CleanupPeerData();
-  -- Import app data
-  self:ImportAppData();
   -- Workaround for misaligned tooltip
   if TacoTipConfig and not TacoTipConfig.show_guild_name then
     print(self:GetColoredText("error", L["TACOTIP_GUILD_NAME_WARNING"]));
@@ -785,6 +806,9 @@ function LogTracker:OnAddonLoaded(addonName)
   if not self.db.syncPeers then
     self.db.syncPeers = {};
   end
+  if self.db.appImportCount == nil then
+    self.db.appImportCount = 0;
+  end
   self:LogDebug("Init");
   -- Init options panel
   self:InitOptions();
@@ -800,7 +824,12 @@ function LogTracker:OnAddonLoaded(addonName)
   -- Filter system messages
   ChatFrame_AddMessageEventFilter("CHAT_MSG_SYSTEM", function(...)
     return LogTracker:OnChatMsgSystemFilter(...);
-  end)
+  end);
+  -- Cleanup player data
+  self:CleanupPlayerData();
+  self:CleanupPeerData();
+  -- Import app data
+  self:ImportAppData();
 end
 
 function LogTracker:OnCommMessage(prefix, message, distribution, sender)
@@ -844,6 +873,16 @@ function LogTracker:OnCommMessageDecoded(message_type, message_data, distributio
     return;
   end
   if message_type == "hi" then
+    if message_data.versionAddon then
+      local myAddonMajor, myAddonMinor, myAddonPatch = strsplit(".", GetAddOnMetadata("LogTracker", "version"));
+      local peerAddonMajor, peerAddonMinor, peerAddonPatch = strsplit(".", message_data.versionAddon);
+      local myAddonNumeric = tonumber(myAddonMajor) * 10000 + tonumber(myAddonMinor) * 100 + tonumber(myAddonPatch);
+      local peerAddonNumeric = tonumber(peerAddonMajor) * 10000 + tonumber(peerAddonMinor) * 100 + tonumber(peerAddonPatch);
+      if (myAddonNumeric < peerAddonNumeric) and not self.versionNoticeSent then
+        self.versionNoticeSent = true;
+        self:LogOutput("There is a new version of LogTracker available! (" .. message_data.versionAddon .. ")");
+      end
+    end
     peer.version = message_data.version or peer.version;
     if message_data.peers then
       for _, name in ipairs(message_data.peers) do
@@ -1256,6 +1295,11 @@ function LogTracker:OnPlayerOnline(name) -- Called when a player is observed to 
 end
 
 function LogTracker:OnLfgListSearchResultUpdated(resultID)
+  -- Only prioritize if at least one activity is selected
+  local prioritizeResult = false;
+  if #LFGBrowseFrame.ActivityDropDown.selectedValues > 0 then
+    prioritizeResult = true;
+  end
   -- Query all members for a lfg entry
 	local searchResultInfo = C_LFGList.GetSearchResultInfo(resultID);
 	local numMembers = searchResultInfo.numMembers;
@@ -1264,9 +1308,13 @@ function LogTracker:OnLfgListSearchResultUpdated(resultID)
     if name then
       self:OnPlayerOnline(name);
       local classId = self:GetClassId(classFileName);
-      self:GetPlayerData(name, nil, classId, level, true);
+      local _, _, _, playerDataRaw = self:GetPlayerData(name, nil, classId, level, true);
+      if playerDataRaw and prioritizeResult then
+        playerDataRaw.priority = 5; -- Add to priority queue
+      end
     end
   end
+  self:UpdateAppQueue();
   self:SyncCheck();
 end
 
@@ -1635,9 +1683,8 @@ function LogTracker:GetPlayerData(playerFull, realmNameExplicit, classId, level,
     elseif (characterKills > 0 and characterLogs == 0) then
       -- No logs present despite kills tracked, request update and queue update (if desired)
       self:SyncRequestLogs(playerName);
-      if rescanMissing and (playerDataRaw.lastUpdateLogs or 0) > 0 then
-        playerDataRaw.lastUpdateLogs = 0;
-        self:LogDebug("Queued rescan for player ", playerName)
+      if rescanMissing then
+        self:SyncRequeue(playerName, plalyerDataRaw);
       end
     end
   else
@@ -1653,7 +1700,15 @@ function LogTracker:GetPlayerData(playerFull, realmNameExplicit, classId, level,
       };
     end
   end
-  return characterData, playerName, realmName;
+  return characterData, playerName, realmName, playerDataRaw;
+end
+
+function LogTracker:SyncRequeue(playerName, playerData)
+  if playerData and (playerData.lastUpdateLogs or 0) > 0 and playerData.updateFails < 2 then
+    playerData.lastUpdateLogs = 0;
+    playerData.priority = 5;
+    self:LogDebug("Queued rescan for player ", playerName)
+  end
 end
 
 function LogTracker:GetPlayerOverallPerformance(playerData, logTargets)
@@ -1815,7 +1870,7 @@ function LogTracker:GetSyncPeer(name, noUpdate, noCreate, version)
     receivedOverall = 0,
     receivedUpdates = 0,
     sentOverall = 0,
-    version = version or 1
+    version = version or syncVersion
   };
   -- Add/update peer history
   if not self.db.syncPeers[realmName] then
@@ -2004,11 +2059,12 @@ function LogTracker:ImportAppData()
       if not playerDetailsLocal or (playerDetailsLocal.lastUpdate <= playerDetailsLocal.lastUpdate) then
         playerDetailsFinal = { 
           level = playerDetails[1], faction = playerDetails[2], class = playerDetails[3],
-          lastUpdate = playerDetails[4], lastUpdateLogs = playerDetails[4],
+          lastUpdate = playerDetails[4], lastUpdateLogs = playerDetails[4], updateFails = 0,
           encounters = {},
           logs = {}
         };
         if playerDetailsLocal then
+          playerDetailsFinal.updateFails = playerDetailsLocal.updateFails or 0;
           playerDetailsFinal.encounters = playerDetailsLocal.encounters or {};
           playerDetailsFinal.logs = playerDetailsLocal.logs or {};
         end
@@ -2018,6 +2074,10 @@ function LogTracker:ImportAppData()
       end
       if not playerDetailsFinal.encounters then
         playerDetailsFinal.encounters = {};
+      end
+      if playerDetailsFinal.priority and playerDetailsFinal.priority < 10 then
+        -- Priorities below 10 are only used for a single update
+        playerDetailsFinal.priority = nil;
       end
       local zoneCount = 0;
       local zoneData = playerDetailsFinal.logs or {};
@@ -2033,6 +2093,9 @@ function LogTracker:ImportAppData()
       end
       if zoneCount > 0 then
         playerDetailsFinal.logs = zoneData;
+        playerDetailsFinal.updateFails = 0;
+      else
+        playerDetailsFinal.updateFails = playerDetailsFinal.updateFails + 1;
       end
       self.db.playerData[realmName][playerName] = playerDetailsFinal;
       if realmName == realmNamePlayer then
@@ -2041,7 +2104,53 @@ function LogTracker:ImportAppData()
       importCount = importCount + 1;
     end
   end  
+  self.db.appImportCount = self.db.appImportCount + importCount;
   self:LogDebug("AppData", "Imported ", importCount, " players from app data.");
+end
+
+function LogTracker:UpdateAppQueue()
+  local now = time();
+  if (self.appSyncStatusTime > now) or InCombatLockdown() then
+    -- Throttle updates / do not update while in combat
+    return;
+  end
+  local update_interval_turbo = 86400;    -- 1 day
+  local update_interval_fast = 86400 * 2; -- 2 days
+  local update_interval_slow = 86400 * 7; -- 1 week
+  local prio_new, prio_update, regular_new, regular_update = 0, 0, 0, 0;
+  for realmName, playerList in pairs(self.db.playerData) do
+    for playerName, playerDetails in pairs(playerList) do
+      if (playerDetails.level == 0 or playerDetails.level == 80) and (playerDetails.class > 0) then
+        local priority = playerDetails.priority or 0;
+        local last_seen = now - playerDetails.lastUpdate;
+        local last_updated = now;
+        if playerDetails.lastUpdateLogs then
+          last_updated = now - playerDetails.lastUpdateLogs;
+        end
+        if last_updated == now then -- New entry
+          if priority > 0 then
+            prio_new = prio_new + 1;
+          else
+            regular_new = regular_new + 1;
+          end
+        elseif (last_updated > update_interval_turbo) and (priority > 0) then -- Prioritised update
+          prio_update = prio_update + 1;
+        elseif (last_updated > update_interval_fast) and (last_seen < update_interval_fast) then -- Regular update (fast)
+          regular_update = regular_update + 1;
+        elseif (last_updated > update_interval_slow) then -- Regular update (slow)
+          regular_update = regular_update + 1;
+        end
+      end
+    end
+  end
+  if self.appSyncStatus then
+    self.appSyncStatus:SetText(
+      "LogTracker App updates queued:\n"..
+      "Priority: |cffffffff"..prio_new.."|r new + |cffffffff"..prio_update.."|r Regular: |cffffffff"..regular_new.."|r new + |cffffffff"..regular_update.."|r"
+    );
+  end
+  self.appSyncStatusTime = now + appQueueUpdateInterval;
+  return prio_new, prio_update, regular_new, regular_update;
 end
 
 function LogTracker:SyncCheck()
@@ -2677,7 +2786,7 @@ function LogTracker:SyncSendHelloFinal(channel, target, version)
     self:SendAddonMessage("hi", nil, channel, target);
   else
     -- Sync Version 2 and beyond
-    local messageData = { version = syncVersion, peers = {} };
+    local messageData = { version = syncVersion, versionAddon = GetAddOnMetadata("LogTracker", "version"), peers = {} };
     for name, peer in pairs(self.syncStatus.peers) do
       if peer.isOnline and peer.version >= 2 then
         tinsert(messageData.peers, name);
