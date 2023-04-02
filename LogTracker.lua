@@ -755,14 +755,6 @@ function LogTracker:OnPlayerEnteringWorld()
   if TacoTipConfig and not TacoTipConfig.show_guild_name then
     print(self:GetColoredText("error", L["TACOTIP_GUILD_NAME_WARNING"]));
   end
-  -- Hook into Group finder frame
-  LogTracker:InitLogsFrame();
-  -- Hook into Group finder tooltip
-  if LFGBrowseSearchEntryTooltip then
-    hooksecurefunc("LFGBrowseSearchEntryTooltip_UpdateAndShow", function(tooltip, ...)
-      LogTracker:OnTooltipShow(tooltip, ...);
-    end);
-  end
   -- Update self
   self:CompareAchievements("player", 30);
   -- Greet peers
@@ -830,6 +822,14 @@ function LogTracker:OnAddonLoaded(addonName)
   self:CleanupPeerData();
   -- Import app data
   self:ImportAppData();
+  -- Hook into Group finder frame
+  LogTracker:InitLogsFrame();
+  -- Hook into Group finder tooltip
+  if LFGBrowseSearchEntryTooltip then
+    hooksecurefunc("LFGBrowseSearchEntryTooltip_UpdateAndShow", function(tooltip, ...)
+      LogTracker:OnTooltipShow(tooltip, ...);
+    end);
+  end
 end
 
 function LogTracker:OnCommMessage(prefix, message, distribution, sender)
