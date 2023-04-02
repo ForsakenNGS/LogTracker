@@ -38,6 +38,7 @@ function LogTracker:Init()
     slashExtension = true,
     hide10Player = false,
     hide25Player = false,
+    disableShift = false,
     syncSend = true,
     syncReceive = true,
     appImportCount = 0,
@@ -530,9 +531,17 @@ function LogTracker:InitOptions()
     self.db.hide25Player = self.optionHide25Player:GetChecked();
   end)
   self.optionHide25Player:SetChecked(self.db.hide25Player);
+  -- Disable extended tooltips
+  self.optionDisableShift = CreateFrame("CheckButton", nil, self.optionsPanel, "InterfaceOptionsCheckButtonTemplate");
+  self.optionDisableShift:SetPoint("TOPLEFT", 20, -140);
+  self.optionDisableShift.Text:SetText(L["OPTION_DISABLE_SHIFT"]);
+  self.optionDisableShift:SetScript("OnClick", function(_, value)
+    self.db.disableShift = self.optionDisableShift:GetChecked();
+  end)
+  self.optionDisableShift:SetChecked(self.db.disableShift);
   -- Send player data to other clients
   self.optionSyncSend = CreateFrame("CheckButton", nil, self.optionsPanel, "InterfaceOptionsCheckButtonTemplate");
-  self.optionSyncSend:SetPoint("TOPLEFT", 20, -140);
+  self.optionSyncSend:SetPoint("TOPLEFT", 20, -160);
   self.optionSyncSend.Text:SetText(L["OPTION_SYNC_SEND"]);
   self.optionSyncSend:SetScript("OnClick", function(_, value)
     self.db.syncSend = self.optionSyncSend:GetChecked();
@@ -540,7 +549,7 @@ function LogTracker:InitOptions()
   self.optionSyncSend:SetChecked(self.db.syncSend);
   -- Receive player data from other clients
   self.optionSyncReceive = CreateFrame("CheckButton", nil, self.optionsPanel, "InterfaceOptionsCheckButtonTemplate");
-  self.optionSyncReceive:SetPoint("TOPLEFT", 20, -160);
+  self.optionSyncReceive:SetPoint("TOPLEFT", 20, -180);
   self.optionSyncReceive.Text:SetText(L["OPTION_SYNC_RECEIVE"]);
   self.optionSyncReceive:SetScript("OnClick", function(_, value)
     self.db.syncReceive = self.optionSyncReceive:GetChecked();
@@ -548,16 +557,15 @@ function LogTracker:InitOptions()
   self.optionSyncReceive:SetChecked(self.db.syncReceive);
   -- Only update prioritized players
   self.optionAppPriorityOnly = CreateFrame("CheckButton", nil, self.optionsPanel, "InterfaceOptionsCheckButtonTemplate");
-  self.optionAppPriorityOnly:SetPoint("TOPLEFT", 20, -180);
+  self.optionAppPriorityOnly:SetPoint("TOPLEFT", 20, -200);
   self.optionAppPriorityOnly.Text:SetText(L["OPTION_APP_PRIORITY_ONLY"]);
   self.optionAppPriorityOnly:SetScript("OnClick", function(_, value)
     self.db.appPriorityOnly = self.optionAppPriorityOnly:GetChecked();
   end)
-  self.optionAppPriorityOnly:SetChecked(self.db.appPriorityOnly or false);
-  
+  self.optionAppPriorityOnly:SetChecked(self.db.appPriorityOnly or false);  
   -- Debug output
   self.optionShowDebug = CreateFrame("CheckButton", nil, self.optionsPanel, "InterfaceOptionsCheckButtonTemplate");
-  self.optionShowDebug:SetPoint("TOPLEFT", 20, -200);
+  self.optionShowDebug:SetPoint("TOPLEFT", 20, -220);
   self.optionShowDebug.Text:SetText(L["OPTION_SHOW_DEBUG"]);
   self.optionShowDebug:SetScript("OnClick", function(_, value)
     self.db.debug = self.optionShowDebug:GetChecked();
@@ -2905,7 +2913,7 @@ function LogTracker:SetPlayerInfoTooltip(playerData, playerName, playerRealm, di
           zoneName .. " " .. zoneProgress .. " " .. zoneHardmodes, zoneSpecs,
           1, 1, 1, 1, 1, 1
         );
-        if IsShiftKeyDown() then
+        if not self.db.disableShift and IsShiftKeyDown() then
           for _, encounter in ipairs(zone.encounters) do
             local encounterName, encounterRating = self:GetPlayerLogsEncounterPerformance(encounter, playerData.class, true);
             GameTooltip:AddDoubleLine(
@@ -2926,7 +2934,7 @@ function LogTracker:SetPlayerInfoTooltip(playerData, playerName, playerRealm, di
           zoneName .. " " .. zoneProgress .. " " .. zoneHardmodes, zoneSpecs,
           1, 1, 1, 1, 1, 1
         );
-        if IsShiftKeyDown() then
+        if not self.db.disableShift and IsShiftKeyDown() then
           for _, encounter in ipairs(zone.encounters) do
             local encounterName, encounterRating = self:GetPlayerEncounterPerformance(encounter, playerData.class, true);
             GameTooltip:AddDoubleLine(
