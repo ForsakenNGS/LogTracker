@@ -8,10 +8,11 @@ local syncThrottle = 2;                -- 2 seconds
 local syncInterval = 5;                -- 5 seconds
 local syncHistoryUpdates = 300;        -- 5 minutes
 local syncHistoryCount = 50;           -- Keep up to 50 players in the "recently updated" list for sync between logins
-local syncHistoryLimit = 300;          -- Do not sync more than 300 players to new peers
-local syncPeerGreeting = 120;          -- 2 minutes
-local syncPeerTimeout = 300;           -- 5 minutes
-local syncPeerUpdates = 1800;          -- 30 minutes
+local syncHistoryLimit = 1500;         -- Do not sync more than 1000 players to new peers
+local syncPeerGreeting = 120;          -- 2 minutes (interval to greet potential peers on guild/raid/group/yell)
+local syncPeerTimeout = 300;           -- 5 minutes (time without contact at which to assume a peer has gone offline)
+local syncPeerUpdates = 1800;          -- 30 minutes (interval to check available peers)
+local syncPeerOnlineCheck = 1800;      -- 30 minutes (check if peers are online if there is nothing to do)
 local syncBatchPlayers = 20;           -- Sync up to 20 players per batch
 local syncRequestLimit = 50;           -- Keep up to 50 players in a request list (to retrieve missing data from other clients)
 local syncRequestDelay = 10;           -- 10 seconds
@@ -397,14 +398,18 @@ function LogTracker:InitLogsFrame()
   end);
   -- Show due app updates
   if self.db.appImportCount > 0 then
-    self.appSyncStatus = LFGBrowseFrame:CreateFontString(nil, "ARTWORK", "GameFontNormalSmallLeft");
-    self.appSyncStatus:SetPoint("TOPLEFT", LFGBrowseFrame, "TOPLEFT", 74, -50);
-    self.appSyncStatus:SetText("");
-    self.appSyncStatus:Show();
-    self.appSyncHelp = LFGBrowseFrame:CreateFontString(nil, "ARTWORK", "GameFontNormalSmallLeft");
-    self.appSyncHelp:SetPoint("TOPLEFT", LFGBrowseFrame, "TOPLEFT", 54, -72);
-    self.appSyncHelp:SetText("|cffa0a0a0Do a /reload to start updating / import results|r");
-    self.appSyncHelp:Show();
+    if not self.appSyncStatus then
+      self.appSyncStatus = LFGBrowseFrame:CreateFontString(nil, "ARTWORK", "GameFontNormalSmallLeft");
+      self.appSyncStatus:SetPoint("TOPLEFT", LFGBrowseFrame, "TOPLEFT", 74, -50);
+      self.appSyncStatus:SetText("");
+      self.appSyncStatus:Show();
+    end
+    if not self.appSyncHelp then
+      self.appSyncHelp = LFGBrowseFrame:CreateFontString(nil, "ARTWORK", "GameFontNormalSmallLeft");
+      self.appSyncHelp:SetPoint("TOPLEFT", LFGBrowseFrame, "TOPLEFT", 54, -72);
+      self.appSyncHelp:SetText("|cffa0a0a0Do a /reload to start updating / import results|r");
+      self.appSyncHelp:Show();
+    end
     self:UpdateAppQueue();
   end
   -- Show logs within the group finder
@@ -766,6 +771,14 @@ function LogTracker:OnPlayerEnteringWorld()
   elseif IsInGroup() then
     self:SendAddonMessage("hi", nil, "PARTY");
   end
+  -- Hook into Group finder frame
+  LogTracker:InitLogsFrame();
+  -- Hook into Group finder tooltip
+  if LFGBrowseSearchEntryTooltip then
+    hooksecurefunc("LFGBrowseSearchEntryTooltip_UpdateAndShow", function(tooltip, ...)
+      LogTracker:OnTooltipShow(tooltip, ...);
+    end);
+  end
   -- WCL Notice
   self:LogOutput("Log ratings (if shown) are owned by and obtained from warcraftlogs.com. Please consider supporting them!");
 end
@@ -822,14 +835,6 @@ function LogTracker:OnAddonLoaded(addonName)
   self:CleanupPeerData();
   -- Import app data
   self:ImportAppData();
-  -- Hook into Group finder frame
-  LogTracker:InitLogsFrame();
-  -- Hook into Group finder tooltip
-  if LFGBrowseSearchEntryTooltip then
-    hooksecurefunc("LFGBrowseSearchEntryTooltip_UpdateAndShow", function(tooltip, ...)
-      LogTracker:OnTooltipShow(tooltip, ...);
-    end);
-  end
 end
 
 function LogTracker:OnCommMessage(prefix, message, distribution, sender)
@@ -2097,11 +2102,13 @@ function LogTracker:ImportAppData()
       else
         playerDetailsFinal.updateFails = playerDetailsFinal.updateFails + 1;
       end
-      self.db.playerData[realmName][playerName] = playerDetailsFinal;
-      if realmName == realmNamePlayer then
-        self:SyncPlayerAdd(playerName);
+      if playerDetailsFinal.class > 0 then
+        self.db.playerData[realmName][playerName] = playerDetailsFinal;
+        if realmName == realmNamePlayer then
+          self:SyncPlayerAdd(playerName);
+        end
+        importCount = importCount + 1;
       end
-      importCount = importCount + 1;
     end
   end  
   self.db.appImportCount = self.db.appImportCount + importCount;
@@ -2228,6 +2235,7 @@ function LogTracker:SyncCheck()
       if whisperPeers > 0 and whisperOffset < playerCount then
         for name, peer in pairs(self.syncStatus.peers) do
           if peer.isWhisper and peer.isOnline and peer.syncOffset == whisperOffset and peer.syncOffset < playerCount and peer.version >= 2 then
+            peer.lastSeen = GetTime();
             local offset, sent = self:SyncSend("WHISPER", name, peer.syncOffset, syncBatchPlayers, peer.version);
             peer.syncOffset = offset;
             self:LogDebug("Sync v" .. peer.version, name, "Whisper", offset, "/", playerCount, " (" .. sent .. ")");
@@ -2236,6 +2244,9 @@ function LogTracker:SyncCheck()
         end
       end
     end
+  end
+  if self:SyncPeersOnlineCheck() then
+    return;
   end
   self:SyncReportPeers();
 end
@@ -2807,6 +2818,22 @@ function LogTracker:SyncUpdatePeers(type, target, sentCount, offset)
       peerStatus.lastUpdate = GetTime();
     end
   end
+end
+
+function LogTracker:SyncPeersOnlineCheck()
+  local realmName = GetRealmName();
+  if not self.db.syncPeers[realmName] then
+    self.db.syncPeers[realmName] = {};
+  end
+  for name, peerStatus in pairs(self.syncStatus.peers) do
+    local peerAge = time() - peerStatus.lastUpdate;
+    if peerAge > syncPeerOnlineCheck then
+      self:GetSyncPeer(name);
+      self:SyncSendHello("WHISPER", name);
+      return true; -- Only check one peer at a time
+    end
+  end
+  return false;
 end
 
 function LogTracker:SyncReportPeers()
