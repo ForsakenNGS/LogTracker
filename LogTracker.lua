@@ -6,13 +6,11 @@ local syncVersion = 3;
 local startupDelay = 10;               -- 10 seconds
 local syncThrottle = 2;                -- 2 seconds
 local syncInterval = 5;                -- 5 seconds
-local syncHistoryUpdates = 300;        -- 5 minutes
 local syncHistoryCount = 50;           -- Keep up to 50 players in the "recently updated" list for sync between logins
-local syncHistoryLimit = 1500;         -- Do not sync more than 1000 players to new peers
+local syncHistoryLimit = 1000;         -- Do not sync more than 1000 players to new peers
 local syncPeerGreeting = 120;          -- 2 minutes (interval to greet potential peers on guild/raid/group/yell)
-local syncPeerTimeout = 300;           -- 5 minutes (time without contact at which to assume a peer has gone offline)
 local syncPeerUpdates = 1800;          -- 30 minutes (interval to check available peers)
-local syncPeerOnlineCheck = 1800;      -- 30 minutes (check if peers are online if there is nothing to do)
+local syncPeerOnlineCheck = 3600;      -- 60 minutes (check if peers are online if there is nothing to do)
 local syncBatchPlayers = 20;           -- Sync up to 20 players per batch
 local syncRequestLimit = 50;           -- Keep up to 50 players in a request list (to retrieve missing data from other clients)
 local syncRequestDelay = 10;           -- 10 seconds
@@ -69,7 +67,6 @@ function LogTracker:Init()
     requestsLock = {},
     requestsLockLogs = {},
     requestsTimer = GetTime(),
-    historyUpdate = GetTime(),
     messages = {},
     messageLength = 0,
     throttleTimer = GetTime() + startupDelay,
@@ -291,6 +288,7 @@ function LogTracker:Init()
   self.db = CopyTable(self.defaults);
   self:SetScript("OnEvent", self.OnEvent);
   self:RegisterEvent("ADDON_LOADED");
+  self:RegisterEvent("PLAYER_LOGOUT");
   self:RegisterEvent("CHAT_MSG_ADDON");
   self:RegisterEvent("CHAT_MSG_SYSTEM");
   self:RegisterEvent("CHAT_MSG_CHANNEL");
@@ -483,94 +481,127 @@ function LogTracker:InitOptions()
   self.optionsPanel = CreateFrame("Frame");
   self.optionsPanel.name = "LogTracker";
   InterfaceOptions_AddCategory(self.optionsPanel);
+  -- --------------------------------------------------- --
+  -- GENERAL                                             --
+  -- --------------------------------------------------- --
+  self.optionsGroupGeneral = CreateFrame("Frame", "LogTracker_Options_GroupGeneral", self.optionsPanel, "OptionsBoxTemplate");
+  self.optionsGroupGeneral:SetPoint("TOPLEFT", 10, -20);
+  self.optionsGroupGeneral:SetSize(600, 130);
+  self.optionsGroupGeneralTitle = _G["LogTracker_Options_GroupGeneralTitle"];
+  self.optionsGroupGeneralTitle:SetText(L["OPTION_GROUP_GENERAL"]);
   -- Chat integration
-  self.optionCheckChat = CreateFrame("CheckButton", nil, self.optionsPanel, "InterfaceOptionsCheckButtonTemplate");
-  self.optionCheckChat:SetPoint("TOPLEFT", 20, -20);
+  self.optionCheckChat = CreateFrame("CheckButton", nil, self.optionsGroupGeneral, "InterfaceOptionsCheckButtonTemplate");
+  self.optionCheckChat:SetPoint("TOPLEFT", 10, -10);
   self.optionCheckChat.Text:SetText(L["OPTION_CHAT"]);
   self.optionCheckChat:SetScript("OnClick", function()
     self.db.chatExtension = self.optionCheckChat:GetChecked();
   end)
   self.optionCheckChat:SetChecked(self.db.chatExtension);
   -- Player tooltip integration
-  self.optionCheckTooltip = CreateFrame("CheckButton", nil, self.optionsPanel, "InterfaceOptionsCheckButtonTemplate");
-  self.optionCheckTooltip:SetPoint("TOPLEFT", 20, -40);
+  self.optionCheckTooltip = CreateFrame("CheckButton", nil, self.optionsGroupGeneral, "InterfaceOptionsCheckButtonTemplate");
+  self.optionCheckTooltip:SetPoint("TOPLEFT", 10, -30);
   self.optionCheckTooltip.Text:SetText(L["OPTION_TOOLTIP"]);
   self.optionCheckTooltip:SetScript("OnClick", function()
     self.db.tooltipExtension = self.optionCheckTooltip:GetChecked();
   end)
   self.optionCheckTooltip:SetChecked(self.db.tooltipExtension);
-  -- Player tooltip integration
-  self.optionCheckLFG = CreateFrame("CheckButton", nil, self.optionsPanel, "InterfaceOptionsCheckButtonTemplate");
-  self.optionCheckLFG:SetPoint("TOPLEFT", 20, -60);
+  -- LFLG integration
+  self.optionCheckLFG = CreateFrame("CheckButton", nil, self.optionsGroupGeneral, "InterfaceOptionsCheckButtonTemplate");
+  self.optionCheckLFG:SetPoint("TOPLEFT", 10, -50);
   self.optionCheckLFG.Text:SetText(L["OPTION_LFG"]);
   self.optionCheckLFG:SetScript("OnClick", function(_, value)
     self.db.lfgExtension = self.optionCheckLFG:GetChecked();
   end)
   self.optionCheckLFG:SetChecked(self.db.lfgExtension);
   -- Slash command
-  self.optionCheckSlash = CreateFrame("CheckButton", nil, self.optionsPanel, "InterfaceOptionsCheckButtonTemplate");
-  self.optionCheckSlash:SetPoint("TOPLEFT", 20, -80);
+  self.optionCheckSlash = CreateFrame("CheckButton", nil, self.optionsGroupGeneral, "InterfaceOptionsCheckButtonTemplate");
+  self.optionCheckSlash:SetPoint("TOPLEFT", 10, -70);
   self.optionCheckSlash.Text:SetText(L["OPTION_SLASH_CMD"]);
   self.optionCheckSlash:SetScript("OnClick", function(_, value)
     self.db.slashExtension = self.optionCheckSlash:GetChecked();
   end)
   self.optionCheckSlash:SetChecked(self.db.slashExtension);
+  -- Debug output
+  self.optionShowDebug = CreateFrame("CheckButton", nil, self.optionsGroupGeneral, "InterfaceOptionsCheckButtonTemplate");
+  self.optionShowDebug:SetPoint("TOPLEFT", 10, -90);
+  self.optionShowDebug.Text:SetText(L["OPTION_SHOW_DEBUG"]);
+  self.optionShowDebug:SetScript("OnClick", function(_, value)
+    self.db.debug = self.optionShowDebug:GetChecked();
+  end)
+  self.optionShowDebug:SetChecked(self.db.debug);
+  -- --------------------------------------------------- --
+  -- TOOLTIP                                             --
+  -- --------------------------------------------------- --
+  self.optionsGroupTooltip = CreateFrame("Frame", "LogTracker_Options_GroupTooltip", self.optionsPanel, "OptionsBoxTemplate");
+  self.optionsGroupTooltip:SetPoint("TOPLEFT", 10, -170);
+  self.optionsGroupTooltip:SetSize(290, 80);
+  self.optionsGroupTooltipTitle = _G["LogTracker_Options_GroupTooltipTitle"];
+  self.optionsGroupTooltipTitle:SetText(L["OPTION_GROUP_TOOLTIP"]);
   -- Show 10 player logs
-  self.optionHide10Player = CreateFrame("CheckButton", nil, self.optionsPanel, "InterfaceOptionsCheckButtonTemplate");
-  self.optionHide10Player:SetPoint("TOPLEFT", 20, -100);
+  self.optionHide10Player = CreateFrame("CheckButton", nil, self.optionsGroupTooltip, "InterfaceOptionsCheckButtonTemplate");
+  self.optionHide10Player:SetPoint("TOPLEFT", 10, -10);
   self.optionHide10Player.Text:SetText(L["OPTION_HIDE_10_PLAYER"]);
   self.optionHide10Player:SetScript("OnClick", function(_, value)
     self.db.hide10Player = self.optionHide10Player:GetChecked();
   end)
   self.optionHide10Player:SetChecked(self.db.hide10Player);
   -- Show 25 player logs
-  self.optionHide25Player = CreateFrame("CheckButton", nil, self.optionsPanel, "InterfaceOptionsCheckButtonTemplate");
-  self.optionHide25Player:SetPoint("TOPLEFT", 20, -120);
+  self.optionHide25Player = CreateFrame("CheckButton", nil, self.optionsGroupTooltip, "InterfaceOptionsCheckButtonTemplate");
+  self.optionHide25Player:SetPoint("TOPLEFT", 10, -30);
   self.optionHide25Player.Text:SetText(L["OPTION_HIDE_25_PLAYER"]);
   self.optionHide25Player:SetScript("OnClick", function(_, value)
     self.db.hide25Player = self.optionHide25Player:GetChecked();
   end)
   self.optionHide25Player:SetChecked(self.db.hide25Player);
   -- Disable extended tooltips
-  self.optionDisableShift = CreateFrame("CheckButton", nil, self.optionsPanel, "InterfaceOptionsCheckButtonTemplate");
-  self.optionDisableShift:SetPoint("TOPLEFT", 20, -140);
+  self.optionDisableShift = CreateFrame("CheckButton", nil, self.optionsGroupTooltip, "InterfaceOptionsCheckButtonTemplate");
+  self.optionDisableShift:SetPoint("TOPLEFT", 10, -50);
   self.optionDisableShift.Text:SetText(L["OPTION_DISABLE_SHIFT"]);
   self.optionDisableShift:SetScript("OnClick", function(_, value)
     self.db.disableShift = self.optionDisableShift:GetChecked();
   end)
   self.optionDisableShift:SetChecked(self.db.disableShift);
+  
+  -- --------------------------------------------------- --
+  -- SYNC                                                --
+  -- --------------------------------------------------- --
+  self.optionsGroupSync = CreateFrame("Frame", "LogTracker_Options_GroupSync", self.optionsPanel, "OptionsBoxTemplate");
+  self.optionsGroupSync:SetPoint("TOPLEFT", 310, -170);
+  self.optionsGroupSync:SetSize(290, 80);
+  self.optionsGroupSyncTitle = _G["LogTracker_Options_GroupSyncTitle"];
+  self.optionsGroupSyncTitle:SetText(L["OPTION_GROUP_SYNC"]);
   -- Send player data to other clients
-  self.optionSyncSend = CreateFrame("CheckButton", nil, self.optionsPanel, "InterfaceOptionsCheckButtonTemplate");
-  self.optionSyncSend:SetPoint("TOPLEFT", 20, -160);
+  self.optionSyncSend = CreateFrame("CheckButton", nil, self.optionsGroupSync, "InterfaceOptionsCheckButtonTemplate");
+  self.optionSyncSend:SetPoint("TOPLEFT", 10, -10);
   self.optionSyncSend.Text:SetText(L["OPTION_SYNC_SEND"]);
   self.optionSyncSend:SetScript("OnClick", function(_, value)
     self.db.syncSend = self.optionSyncSend:GetChecked();
   end)
   self.optionSyncSend:SetChecked(self.db.syncSend);
   -- Receive player data from other clients
-  self.optionSyncReceive = CreateFrame("CheckButton", nil, self.optionsPanel, "InterfaceOptionsCheckButtonTemplate");
-  self.optionSyncReceive:SetPoint("TOPLEFT", 20, -180);
+  self.optionSyncReceive = CreateFrame("CheckButton", nil, self.optionsGroupSync, "InterfaceOptionsCheckButtonTemplate");
+  self.optionSyncReceive:SetPoint("TOPLEFT", 10, -30);
   self.optionSyncReceive.Text:SetText(L["OPTION_SYNC_RECEIVE"]);
   self.optionSyncReceive:SetScript("OnClick", function(_, value)
     self.db.syncReceive = self.optionSyncReceive:GetChecked();
   end)
   self.optionSyncReceive:SetChecked(self.db.syncReceive);
+  -- --------------------------------------------------- --
+  -- APP                                                 --
+  -- --------------------------------------------------- --
+  self.optionsGroupApp = CreateFrame("Frame", "LogTracker_Options_GroupApp", self.optionsPanel, "OptionsBoxTemplate");
+  self.optionsGroupApp:SetPoint("TOPLEFT", 10, -270);
+  self.optionsGroupApp:SetSize(600, 280);
+  self.optionsGroupAppTitle = _G["LogTracker_Options_GroupAppTitle"];
+  self.optionsGroupAppTitle:SetText(L["OPTION_GROUP_APP"]);
   -- Only update prioritized players
-  self.optionAppPriorityOnly = CreateFrame("CheckButton", nil, self.optionsPanel, "InterfaceOptionsCheckButtonTemplate");
-  self.optionAppPriorityOnly:SetPoint("TOPLEFT", 20, -200);
+  self.optionAppPriorityOnly = CreateFrame("CheckButton", nil, self.optionsGroupApp, "InterfaceOptionsCheckButtonTemplate");
+  self.optionAppPriorityOnly:SetPoint("TOPLEFT", 10, -10);
   self.optionAppPriorityOnly.Text:SetText(L["OPTION_APP_PRIORITY_ONLY"]);
   self.optionAppPriorityOnly:SetScript("OnClick", function(_, value)
     self.db.appPriorityOnly = self.optionAppPriorityOnly:GetChecked();
   end)
-  self.optionAppPriorityOnly:SetChecked(self.db.appPriorityOnly or false);  
-  -- Debug output
-  self.optionShowDebug = CreateFrame("CheckButton", nil, self.optionsPanel, "InterfaceOptionsCheckButtonTemplate");
-  self.optionShowDebug:SetPoint("TOPLEFT", 20, -220);
-  self.optionShowDebug.Text:SetText(L["OPTION_SHOW_DEBUG"]);
-  self.optionShowDebug:SetScript("OnClick", function(_, value)
-    self.db.debug = self.optionShowDebug:GetChecked();
-  end)
-  self.optionShowDebug:SetChecked(self.db.debug);
+  self.optionAppPriorityOnly:SetChecked(self.db.appPriorityOnly or false);
 end
 
 function LogTracker:LogOutput(...)
@@ -730,6 +761,8 @@ end
 function LogTracker:OnEvent(event, ...)
   if (event == "ADDON_LOADED") then
     self:OnAddonLoaded(...);
+  elseif (event == "PLAYER_LOGOUT") then
+    self:OnPlayerLogout(...);
   elseif (event == "CHAT_MSG_ADDON") then
     self:OnChatMsgAddon(...);
   elseif (event == "CHAT_MSG_SYSTEM") then
@@ -785,6 +818,12 @@ function LogTracker:OnPlayerEnteringWorld()
   if LFGBrowseSearchEntryTooltip then
     hooksecurefunc("LFGBrowseSearchEntryTooltip_UpdateAndShow", function(tooltip, ...)
       LogTracker:OnTooltipShow(tooltip, ...);
+    end);
+  end
+  -- Sync timer
+  if not self.syncTimer then
+    self.syncTimer = C_Timer.NewTicker(1, function()
+      LogTracker:SyncCheck();
     end);
   end
   -- WCL Notice
@@ -845,11 +884,28 @@ function LogTracker:OnAddonLoaded(addonName)
   self:ImportAppData();
 end
 
+function LogTracker:OnPlayerLogout()
+  local realmName = GetRealmName();
+  -- Store history slice
+  wipe(self.db.syncHistory);
+  local last = #(self.syncStatus.players);
+  local first = max(0, last - syncHistoryCount) + 1;
+  for i = first, last do
+    tinsert(self.db.syncHistory, self.syncStatus.players[i]);
+  end
+  self:LogDebug("SyncPeers", "Updated persistent sync history.");
+  -- Adjust history for online peers, so they will be checked after reload/relog
+  for name, peer in pairs(self.syncStatus.peers) do
+    if peer.isWhisper and peer.isOnline then
+      self.db.syncPeers[realmName][name].lastUpdate = time() - syncPeerOnlineCheck;
+    end
+  end
+end
+
 function LogTracker:OnCommMessage(prefix, message, distribution, sender)
   if not self.db.syncSend and not self.db.syncReceive then
     return;
   end
-  self:SyncCheck();
   if prefix ~= addonPrefixCompressed then
     return;
   end
@@ -895,6 +951,7 @@ function LogTracker:OnCommMessageDecoded(message_type, message_data, distributio
         self.versionNoticeSent = true;
         self:LogOutput("There is a new version of LogTracker available! (" .. message_data.versionAddon .. ")");
       end
+      peer.versionAddon = message_data.versionAddon;
     end
     peer.version = message_data.version or peer.version;
     if message_data.peers then
@@ -1004,7 +1061,6 @@ function LogTracker:OnChatMsgAddon(prefix, message, source, sender)
   if not self.db.syncSend and not self.db.syncReceive then
     return;
   end
-  self:SyncCheck();
   if prefix ~= addonPrefix then
     return;
   end
@@ -1182,6 +1238,9 @@ function LogTracker:OnTooltipSetUnit(tooltip, ...)
   local classId = self:GetWclClassId(classIdGame);
   local unitName, unitRealm = UnitName(unitId);
   local unitLevel = UnitLevel(unitId);
+  if unitLevel < 0 then
+    unitLevel = 0;
+  end
   local playerData, playerName, playerRealm = self:GetPlayerData(unitName, unitRealm, classId, unitLevel, true);
   if playerData then
     self:SetPlayerInfoTooltip(playerData, playerName, playerRealm);
@@ -1564,6 +1623,9 @@ function LogTracker:GetPlayerData(playerFull, realmNameExplicit, classId, level,
   if playerDataRaw then
     -- Group data by zone
     local characterZones = {};
+    local characterHasKills = false;
+    local characterHasLogs = false;
+    local characterHasEncounters = false;
     if playerDataRaw.logs then
       for zoneIdSize, zonePerformance in pairs(playerDataRaw.logs) do
         characterZones[zoneIdSize] = characterZones[zoneIdSize] or { count = 0, hardmodes = 0 };
@@ -1577,6 +1639,8 @@ function LogTracker:GetPlayerData(playerFull, realmNameExplicit, classId, level,
             ['spec'] = tonumber(zoneAllstarsEntry[1]),
             ['percentRank'] = zoneAllstarsEntry[2]
           });
+          characterHasKills = true;
+          characterHasLogs = true;
         end
         if zonePerformance[4] ~= "" then
           local zoneEncountersRaw = self:UnstringifyData(zonePerformance[4]);
@@ -1588,6 +1652,7 @@ function LogTracker:GetPlayerData(playerFull, realmNameExplicit, classId, level,
               percentMedian = tonumber(zoneEncountersEntry[3] or 0)
             });
           end
+          characterHasLogs = true;
         end
       end
     end
@@ -1612,6 +1677,7 @@ function LogTracker:GetPlayerData(playerFull, realmNameExplicit, classId, level,
               if zoneEncounterHmDiff > 1 then
                 characterZones[zoneIdSize].hardmodes = characterZones[zoneIdSize].hardmodes + 1;
               end
+              characterHasKills = true;
             else
               zoneEncounterHmDiff = 0;
             end
@@ -1620,6 +1686,7 @@ function LogTracker:GetPlayerData(playerFull, realmNameExplicit, classId, level,
               hardmode = self:GetColoredText("hardmode" .. zoneEncounterHmDiff, zoneEncounterHmLabel),
               hardmodeDiff = zoneEncounterHmDiff
             });
+            characterHasEncounters = true;
           end
         end
       end
@@ -1689,15 +1756,21 @@ function LogTracker:GetPlayerData(playerFull, realmNameExplicit, classId, level,
       ['last_update'] = playerDataRaw.lastUpdateLogs or playerDataRaw.lastUpdate,
       ['logs'] = characterPerformance,
     };
-    local characterLogsAge = GetTime() - (playerDataRaw.lastUpdateLogs or 0);
-    if characterLogsAge > playerLogsInterval then
-      -- Data older than desired, request update
-      self:SyncRequestLogs(playerName);
-    elseif (characterKills > 0 and characterLogs == 0) then
-      -- No logs present despite kills tracked, request update and queue update (if desired)
-      self:SyncRequestLogs(playerName);
-      if rescanMissing then
-        self:SyncRequeue(playerName, plalyerDataRaw);
+    if not characterHasEncounters then
+      -- No encounter data available, request update
+      self:SyncRequest(playerName);
+    elseif characterHasKills then
+      -- Encounter data available and player has killed at least one boss
+      local characterLogsAge = GetTime() - (playerDataRaw.lastUpdateLogs or 0);
+      if characterLogsAge > playerLogsInterval then
+        -- Data older than desired, request update
+        self:SyncRequestLogs(playerName);
+      elseif (characterKills > 0 and characterLogs == 0) then
+        -- No logs present despite kills tracked, request update and queue update (if desired)
+        self:SyncRequestLogs(playerName);
+        if rescanMissing then
+          self:SyncRequeue(playerName, playerDataRaw);
+        end
       end
     end
   else
@@ -1988,6 +2061,9 @@ function LogTracker:CompareAchievements(unitId, priority)
   end
   playerDetails.class = classId;
   playerDetails.level = UnitLevel(unitId);
+  if playerDetails.level < 0 then
+    playerDetails.level = 0;
+  end
   playerDetails.faction = UnitFactionGroup(unitId);
   if priority then
     playerDetails.priority = priority;
@@ -2019,6 +2095,9 @@ function LogTracker:CleanupPlayerData()
         end
         if type(playerDetails.level) == "string" then
           playerDetails.level = tonumber(playerDetails.level);
+        end
+        if playerDetails.level < 0 then
+          playerDetails.level = 0;
         end
         realmPlayers[name] = playerDetails;
         kept = kept + 1;
@@ -2135,7 +2214,32 @@ function LogTracker:UpdateAppQueue()
   local prio_new, prio_update, regular_new, regular_update = 0, 0, 0, 0;
   for realmName, playerList in pairs(self.db.playerData) do
     for playerName, playerDetails in pairs(playerList) do
-      if (playerDetails.level == 0 or playerDetails.level == 80) and (playerDetails.class > 0) then
+      if playerDetails.encounters and not playerDetails.encounter_kills then
+        local encounter_kills = nil;
+        for zone_id, encounter_str in pairs(playerDetails.encounters) do
+          local zone_kills = nil;
+          local encounter_data = self:UnstringifyData(encounter_str, "/");
+          for boss_index, boss_data in ipairs(encounter_data) do
+            if #boss_data >= 3 then
+              local boss_kills = tonumber(boss_data[1]);
+              if boss_kills > 0 then
+                zone_kills = (zone_kills or 0) + 1;
+              else
+                zone_kills = (zone_kills or 0);
+              end
+            end
+          end
+          if zone_kills ~= nil then
+            encounter_kills = max((encounter_kills or 0), zone_kills);
+          end
+        end
+        if encounter_kills ~= nil then
+          playerDetails.encounter_kills = encounter_kills;
+        end
+      end
+      if (playerDetails.level == 0 or playerDetails.level == 80) and (playerDetails.class > 0) 
+        and (playerDetails.encounter_kills == nil or playerDetails.encounter_kills > 0)
+      then
         local priority = playerDetails.priority or 0;
         local last_seen = now - playerDetails.lastUpdate;
         local last_updated = now;
@@ -2195,18 +2299,6 @@ function LogTracker:SyncCheck()
     self.syncStatus.peersUpdate = now + syncPeerUpdates;
     local guild, party, raid, whisper = self:SyncUpdateFull();
     self:LogDebug("SyncPeers", "Updated available peers", "Guild: " .. guild, "Party: " .. party, "Raid: " .. raid, "Whisper: " .. whisper);
-    return;
-  end
-  if self.syncStatus.historyUpdate < now then
-    -- Update sync history
-    self.syncStatus.historyUpdate = now + syncHistoryUpdates;
-    wipe(self.db.syncHistory);
-    local last = #(self.syncStatus.players);
-    local first = max(0, last - syncHistoryCount) + 1;
-    for i = first, last do
-      tinsert(self.db.syncHistory, self.syncStatus.players[i]);
-    end
-    self:LogDebug("SyncPeers", "Updated persistent sync history.");
     return;
   end
   if self.syncStatus.timer < now and self.db.syncSend then
@@ -2422,13 +2514,6 @@ function LogTracker:SyncUpdateWhisper(no_yell)
     end
   end
   for name, peer in pairs(self.syncStatus.peers) do
-    -- Update online status
-    if peer.isOnline then
-      local peerAge = GetTime() - peer.lastSeen;
-      if peerAge > syncPeerTimeout then
-        peer.isOnline = false;
-      end
-    end
     -- Check if peer should sync via whisper
     if peer.isOnline and not peer.isGuild and not peer.isParty and not peer.isRaid then
       peer.isWhisper = true;
@@ -2449,7 +2534,7 @@ function LogTracker:SyncPlayerAdd(playerName)
     tinsert(self.syncStatus.players, playerName);
   end
   if #(self.syncStatus.players) > syncHistoryLimit then
-    self.syncStatus.offsetStart = max(0, syncHistoryLimit - #(self.syncStatus.players));
+    self.syncStatus.offsetStart = max(0, #(self.syncStatus.players) - syncHistoryLimit);
   end
 end
 
@@ -2833,11 +2918,13 @@ function LogTracker:SyncPeersOnlineCheck()
   if not self.db.syncPeers[realmName] then
     self.db.syncPeers[realmName] = {};
   end
-  for name, peerStatus in pairs(self.syncStatus.peers) do
+  for name, peerStatus in pairs(self.db.syncPeers[realmName]) do
     local peerAge = time() - peerStatus.lastUpdate;
     if peerAge > syncPeerOnlineCheck then
       self:GetSyncPeer(name);
       self:SyncSendHello("WHISPER", name);
+      self:LogDebug("Checking if peer " .. name .. " is online...");
+      peerStatus.lastUpdate = time();
       return true; -- Only check one peer at a time
     end
   end
@@ -2849,13 +2936,13 @@ function LogTracker:SyncReportPeers()
   for name, peerStatus in pairs(self.syncStatus.peers) do
     if not peerStatus.chatReported then
       local age = now - peerStatus.lastReport;
-      if age > 30 then
+      if age > 120 then
         self:LogDebug(
           "Sync stats for peer " .. name .. ":",
           "Received: " .. peerStatus.receivedOverall,
           "Updated: " .. peerStatus.receivedUpdates,
           "Sent: " .. peerStatus.sentOverall,
-          "Version: " .. peerStatus.version
+          "Version: " .. (peerStatus.versionAddon or peerStatus.version)
         );
         peerStatus.chatReported = true;
         peerStatus.lastReport = now;
