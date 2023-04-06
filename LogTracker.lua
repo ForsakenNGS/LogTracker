@@ -1,10 +1,7 @@
 local _, L = ...;
-local addonPrefix = "LTSY";
 local addonPrefixCompressed = "LTSC";
 local dbVersion = 1;
 local syncVersion = 3;
-local startupDelay = 10;               -- 10 seconds
-local syncThrottle = 2;                -- 2 seconds
 local syncInterval = 5;                -- 5 seconds
 local syncHistoryCount = 50;           -- Keep up to 50 players in the "recently updated" list for sync between logins
 local syncHistoryLimit = 1000;         -- Do not sync more than 1000 players to new peers
@@ -12,7 +9,7 @@ local syncPeerGreeting = 120;          -- 2 minutes (interval to greet potential
 local syncPeerUpdates = 1800;          -- 30 minutes (interval to check available peers)
 local syncPeerOnlineCheck = 3600;      -- 60 minutes (check if peers are online if there is nothing to do)
 local syncBatchPlayers = 20;           -- Sync up to 20 players per batch
-local syncRequestLimit = 50;           -- Keep up to 50 players in a request list (to retrieve missing data from other clients)
+local syncRequestFactor = 100;         -- Number of players used for calculating the request delay
 local syncRequestDelay = 10;           -- 10 seconds
 local playerUpdateInterval = 3600;     -- 1 hours
 local playerLogsInterval = 86400;      -- 1 day
@@ -64,12 +61,12 @@ function LogTracker:Init()
     players = {},
     requests = {},
     requestsLogs = {},
+    requestsSent = {},
     requestsLock = {},
     requestsLockLogs = {},
     requestsTimer = GetTime(),
     messages = {},
-    messageLength = 0,
-    throttleTimer = GetTime() + startupDelay,
+    messageLength = 0
   };
   self.appSyncStatusTime = time();
   self.versionNoticeSent = false;
@@ -289,7 +286,6 @@ function LogTracker:Init()
   self:SetScript("OnEvent", self.OnEvent);
   self:RegisterEvent("ADDON_LOADED");
   self:RegisterEvent("PLAYER_LOGOUT");
-  self:RegisterEvent("CHAT_MSG_ADDON");
   self:RegisterEvent("CHAT_MSG_SYSTEM");
   self:RegisterEvent("CHAT_MSG_CHANNEL");
   self:RegisterEvent("MODIFIER_STATE_CHANGED");
@@ -635,39 +631,10 @@ function LogTracker:UnstringifyData(dataStr, glueOuter, glueInner)
   return data;
 end
 
-function LogTracker:SendAddonMessage(action, data, type, target, prio)
-  if type == "WHISPER" then
-    local peer = self:GetSyncPeer(target, true, true);
-    if peer and not peer.isOnline then
-      return;
-    end
-  end
-  local message = action;
-  if data ~= nil then
-    message = message .. "|" .. data;
-  end
-  --self:LogDebug("SendAddonMessage", action, type, target);
-  ChatThrottleLib:SendAddonMessage(prio or "NORMAL", addonPrefix, message, type, target);
-end
-
 function LogTracker:SendCommMessage(action, data, type, target, prio)
   local message = action.."#"..LibDeflate:EncodeForPrint(LibDeflate:CompressDeflate(LibSerialize:Serialize(data)));
   --self:LogDebug("SendCommMessage", action, type, target);
   Comm:SendCommMessage(addonPrefixCompressed, message, type, target, prio or "NORMAL");
-end
-
-function LogTracker:QueueAddonMessage(action, data)
-  local message = action;
-  if data ~= nil then
-    message = message .. "|" .. data;
-  end
-  local messageLength = strlen(addonPrefix) + strlen(message) + 1;
-  --self:LogDebug("QueueAddonMessage", messageLength, action, type, target, data);
-  if messageLength > 254 then
-    self:LogDebug("QueueAddonMessage", "Message too long! (" .. messageLength .. "/254)", action);
-  else
-    tinsert(self.syncStatus.messages, message);
-  end
 end
 
 function LogTracker:InsertPlayerData(data, name, requireLogs)
@@ -682,59 +649,6 @@ function LogTracker:InsertPlayerData(data, name, requireLogs)
     return true;
   end
   return false;
-end
-
-function LogTracker:QueuePlayerData(name, requireLogs)
-  local realmName = GetRealmName();
-  local playerData = self.db.playerData[realmName][name];
-  if playerData and (playerData.class > 0) and (playerData.lastUpdateLogs or not requireLogs) then
-    local message = name .. "#" .. playerData.level .. "#" .. playerData.faction .. "#" .. playerData.class .. "#" .. playerData.lastUpdate .. "#" .. syncVersion;
-    self:QueueAddonMessage("pl", message);
-    if playerData.logs then
-      for zoneId, logData in pairs(playerData.logs) do
-        local allstarsData = self:StringifyData(self:UnstringifyData(logData[3]), "/");
-        local encounterData = self:StringifyData(self:UnstringifyData(logData[4]), "/");
-        -- playerName#zoneId#ecounters#encountersKilled#allstarsData#encounterData
-        self:QueueAddonMessage("plL", name .. "#" .. zoneId .. "#" .. logData[1] .. "#" .. logData[2] .. "#" .. allstarsData .. "#" .. encounterData);
-      end
-    else
-      for zoneId, encounterData in pairs(playerData.encounters) do
-        self:QueueAddonMessage("plE", name .. "#" .. zoneId .. "#" .. encounterData);
-      end
-    end
-    return true;
-  end
-  return false;
-end
-
-function LogTracker:FlushAddonMessages(type, target, prio)
-  local statsMessages = 0;
-  local statsBytes = 0;
-  local data = "";
-  local size = strlen(addonPrefix) + 1;
-  for _, message in ipairs(self.syncStatus.messages) do
-    if (size + strlen(message) + 1 > 254) then
-      ChatThrottleLib:SendAddonMessage(prio or "NORMAL", addonPrefix, data, type, target);
-      statsBytes = statsBytes + size;
-      statsMessages = statsMessages + 1;
-      data = message;
-      size = strlen(addonPrefix) + strlen(message) + 1;
-    else
-      if data == "" then
-        data = message;
-      else
-        data = data .. "|" .. message;
-      end
-      size = size + strlen(message) + 1;
-    end
-  end
-  if data ~= "" then
-    ChatThrottleLib:SendAddonMessage(prio or "NORMAL", addonPrefix, data, type, target);
-    statsBytes = statsBytes + size;
-    statsMessages = statsMessages + 1;
-  end
-  wipe(self.syncStatus.messages);
-  --self:LogDebug("FlushAddonMessages", "Sent " .. statsBytes .. "bytes in " .. statsMessages .. " messages");
 end
 
 function LogTracker:AddPlayerInfoToTooltip(targetName)
@@ -763,8 +677,6 @@ function LogTracker:OnEvent(event, ...)
     self:OnAddonLoaded(...);
   elseif (event == "PLAYER_LOGOUT") then
     self:OnPlayerLogout(...);
-  elseif (event == "CHAT_MSG_ADDON") then
-    self:OnChatMsgAddon(...);
   elseif (event == "CHAT_MSG_SYSTEM") then
     self:OnChatMsgSystem(...);
   elseif (event == "CHAT_MSG_CHANNEL") then
@@ -805,12 +717,12 @@ function LogTracker:OnPlayerEnteringWorld()
   self:CompareAchievements("player", 30);
   -- Greet peers
   if IsInGuild() then
-    self:SendAddonMessage("hi", nil, "GUILD");
+    self:SyncSendHello("GUILD");
   end
   if IsInRaid() then
-    self:SendAddonMessage("hi", nil, "RAID");
+    self:SyncSendHello("RAID");
   elseif IsInGroup() then
-    self:SendAddonMessage("hi", nil, "PARTY");
+    self:SyncSendHello("PARTY");
   end
   -- Hook into Group finder frame
   LogTracker:InitLogsFrame();
@@ -820,6 +732,8 @@ function LogTracker:OnPlayerEnteringWorld()
       LogTracker:OnTooltipShow(tooltip, ...);
     end);
   end
+  -- Cleanup peer status
+  self:CleanupPeerStatus();
   -- Sync timer
   if not self.syncTimer then
     self.syncTimer = C_Timer.NewTicker(1, function()
@@ -871,8 +785,6 @@ function LogTracker:OnAddonLoaded(addonName)
       LogTracker:OnSlashCommand(...);
     end
   end
-  -- Register addon prefix
-  C_ChatInfo.RegisterAddonMessagePrefix(addonPrefix);
   -- Filter system messages
   ChatFrame_AddMessageEventFilter("CHAT_MSG_SYSTEM", function(...)
     return LogTracker:OnChatMsgSystemFilter(...);
@@ -1017,7 +929,7 @@ function LogTracker:OnCommMessageDecoded(message_type, message_data, distributio
     peer.version = message_data.version or peer.version;
     -- Request for player data
     local amount = self:SyncSendByNames(message_data.names, distribution, sender);
-    self:LogDebug("Sync v2 Request (base)", syncName, "Sent " .. amount .. " / " .. #message_data.names .. " players");
+    self:LogDebug("Sync v2 Request (base) from", syncName, "(Sent " .. amount .. " / " .. #message_data.names .. " players)");
     --self:LogDebug("Sync Request (base)", unpack(message_data.names));
   elseif message_type == "rqL" then
     if not self.db.syncSend then
@@ -1026,7 +938,7 @@ function LogTracker:OnCommMessageDecoded(message_type, message_data, distributio
     peer.version = message_data.version or peer.version;
     -- Request for player logs
     local amount = self:SyncSendByNames(message_data.names, distribution, sender, true);
-    self:LogDebug("Sync v2 Request (logs)", syncName, "Sent " .. amount .. " / " .. #message_data.names .. " players");
+    self:LogDebug("Sync v2 Request (logs) from", syncName, "(Sent " .. amount .. " / " .. #message_data.names .. " players)");
     --self:LogDebug("Sync Request (logs)", unpack(message_data.names));
   elseif message_type == "rqC" then
     if not self.db.syncSend then
@@ -1043,7 +955,7 @@ function LogTracker:OnCommMessageDecoded(message_type, message_data, distributio
       amountSent = amountSent + self:SyncSendByNames(message_data.names_logs, distribution, sender, true);
       amountRequested = amountRequested + #message_data.names_logs;
     end
-    self:LogDebug("Sync v3 Request", syncName, "Sent " .. amountSent .. " / " .. amountRequested .. " players");
+    self:LogDebug("Sync v3 Request from", syncName, "(Sent " .. amountSent .. " / " .. amountRequested .. " players)");
   end
   peer.chatReported = false;
   peer.lastUpdate = GetTime();
@@ -1054,136 +966,6 @@ function LogTracker:OnCommMessageDecoded(message_type, message_data, distributio
     peer.isParty = true;
   elseif distribution == "RAID" then
     peer.isRaid = true;
-  end
-end
-
-function LogTracker:OnChatMsgAddon(prefix, message, source, sender)
-  if not self.db.syncSend and not self.db.syncReceive then
-    return;
-  end
-  if prefix ~= addonPrefix then
-    return;
-  end
-  local realmName = GetRealmName();
-  local syncName = strsplit("-", sender);
-  self.db.playerData[realmName] = self.db.playerData[realmName] or {};
-  local peer = self:GetSyncPeer(syncName);
-  if peer == nil then
-    return;
-  end
-  local parts = { strsplit("|", message) };
-  while #(parts) > 0 do
-    local action = tremove(parts, 1);
-    --self:LogDebug("Sync Received", syncName, action);
-    if action == "hi" or action == "hello" then
-      -- New peer
-    elseif action == "pl" then
-      if not self.db.syncReceive then
-        return;
-      end
-      -- Player base data
-      local data = tremove(parts, 1);
-      if data then
-        local name, level, faction, class, lastUpdate, peerSyncVersion = strsplit("#", data);
-        lastUpdate = tonumber(lastUpdate);
-        local playerData = self.db.playerData[realmName][name];
-        peer.receivedOverall = peer.receivedOverall + 1;
-        peer.version = peerSyncVersion or peer.version;
-        if not playerData then
-          playerData = { encounters = {}, lastUpdate = lastUpdate - 1 };
-        end
-        if (playerData.lastUpdate < lastUpdate) then
-          playerData.level = level;
-          playerData.faction = faction;
-          playerData.lastUpdate = lastUpdate;
-          playerData.syncFrom = syncName;
-          if not playerData.class or (peerSyncVersion and tonumber(peerSyncVersion) >= 1) then
-            playerData.class = class;
-          end
-          self.db.playerData[realmName][name] = playerData;
-          peer.receivedUpdates = peer.receivedUpdates + 1;
-        elseif not playerData.lastUpdateLogs or (playerData.lastUpdateLogs < lastUpdate) then
-          playerData.lastUpdate = lastUpdate;
-          playerData.syncFrom = syncName;
-          self.db.playerData[realmName][name] = playerData;
-          peer.receivedUpdates = peer.receivedUpdates + 1;
-        end
-      end
-    elseif action == "plE" then
-      if not self.db.syncSend then
-        return;
-      end
-      -- Player encounter data
-      local data = tremove(parts, 1);
-      if data then
-        local name, zoneId, encouterData = strsplit("#", data);
-        local playerData = self.db.playerData[realmName][name];
-        if playerData and playerData.syncFrom and playerData.syncFrom == syncName then
-          if not playerData.encounters then
-            playerData.encounters = {};
-          end
-          playerData.encounters[zoneId] = encouterData;
-          -- Update tooltip if target is active
-          local unitName, unitId = GameTooltip:GetUnit();
-          if unitId and unitName and (unitName == name) then
-            self:LogDebug("Received encounter data for active tooltip, updating... (Sync from "..syncName..")");
-            GameTooltip:SetUnit(unitId);
-          end
-        end
-      end
-    elseif action == "plL" then
-      if not self.db.syncSend then
-        return;
-      end
-      -- Player encounter data
-      local data = tremove(parts, 1);
-      if data then
-        local name, zoneId, encounters, encountersKilled, allstarDataStr, encounterDataStr = strsplit("#", data);
-        local playerData = self.db.playerData[realmName][name];
-        if playerData and playerData.syncFrom and playerData.syncFrom == syncName then
-          allstarDataStr = self:StringifyData(self:UnstringifyData(allstarDataStr, "/"));
-          encounterDataStr = self:StringifyData(self:UnstringifyData(encounterDataStr, "/"));
-          if not playerData.logs then
-            playerData.logs = {};
-          end
-          playerData.logs[zoneId] = { encounters, encountersKilled, allstarDataStr, encounterDataStr };
-          -- Update tooltip if target is active
-          local unitName, unitId = GameTooltip:GetUnit();
-          if unitId and unitName and (unitName == name) then
-            self:LogDebug("Received log data for active tooltip, updating... (Sync from "..syncName..")");
-            GameTooltip:SetUnit(unitId);
-          end
-        end
-      end
-    elseif action == "rq" then
-      if not self.db.syncSend then
-        return;
-      end
-      -- Request for player data
-      local data = tremove(parts, 1);
-      local names = { strsplit("#", data) };
-      local amount = self:SyncSendByNames(names, source, sender);
-      self:LogDebug("Sync v1 Request (base)", syncName, "Sent " .. amount .. " / " .. #names .. " players");
-    elseif action == "rqL" then
-      if not self.db.syncSend then
-        return;
-      end
-      -- Request for player logs
-      local data = tremove(parts, 1);
-      local names = { strsplit("#", data) };
-      local amount = self:SyncSendByNames(names, source, sender, true);
-      self:LogDebug("Sync v1 Request (logs)", syncName, "Sent " .. amount .. " / " .. #names .. " players");
-    end
-    peer.chatReported = false;
-    peer.lastUpdate = GetTime();
-    peer.isOnline = true;
-    if source == "GUILD" then
-      peer.isGuild = true;
-    elseif source == "PARTY" then
-      peer.isParty = true;
-    elseif source == "RAID" then
-      peer.isRaid = true;
-    end
   end
 end
 
@@ -2135,6 +1917,15 @@ function LogTracker:CleanupPeerData()
   return removed, kept;
 end
 
+function LogTracker:CleanupPeerStatus()
+  for name, peerStatus in pairs(self.syncStatus.peers) do
+    if peerStatus.requestNames then
+      -- Clear requested players
+      peerStatus.requestNames = nil;
+    end
+  end
+end
+
 function LogTracker:ImportAppData()
   if not LogTracker_AppData then
     return;
@@ -2277,11 +2068,6 @@ function LogTracker:SyncCheck()
     return;
   end
   local now = GetTime();
-  if self.syncStatus.throttleTimer > now then
-    return;
-  end
-  --self:LogDebug("SyncCheck");
-  self.syncStatus.throttleTimer = now + syncThrottle;
   -- Bandwidth
   local chatBandwidth = ChatThrottleLib:UpdateAvail();
   if chatBandwidth < 1000 then
@@ -2580,8 +2366,8 @@ function LogTracker:SyncRequestBase(name)
     tremove(self.syncStatus.requests, requestIndex);
   end
   -- Shorten list to respect limit
-  while #(self.syncStatus.requests) >= syncRequestLimit do
-    tremove(self.syncStatus.requests, syncRequestLimit);
+  while #(self.syncStatus.requests) >= syncRequestFactor do
+    tremove(self.syncStatus.requests, syncRequestFactor);
   end
   -- Prepend requested player
   tinsert(self.syncStatus.requests, 1, name);
@@ -2609,8 +2395,8 @@ function LogTracker:SyncRequestLogs(name)
     tremove(self.syncStatus.requestsLogs, requestIndex);
   end
   -- Shorten list to respect limit
-  while #(self.syncStatus.requestsLogs) >= syncRequestLimit do
-    tremove(self.syncStatus.requestsLogs, syncRequestLimit);
+  while #(self.syncStatus.requestsLogs) >= syncRequestFactor do
+    tremove(self.syncStatus.requestsLogs, syncRequestFactor);
   end
   -- Prepend requested player
   tinsert(self.syncStatus.requestsLogs, 1, name);
@@ -2670,20 +2456,8 @@ function LogTracker:SyncSend(type, target, offset, limit, version)
   local last = min(playerCount, limit + offset - 1);
   local amount = 0;
   local realmName = GetRealmName();
-  if version == 1 then
-    -- Sync Version 1
-    -- Send messages
-    self.db.playerData[realmName] = self.db.playerData[realmName] or {};
-    for i = offset, last do
-      local playerName = self.syncStatus.players[i];
-      if self:QueuePlayerData(playerName) then
-        amount = amount + 1;
-      end
-    end
-    -- Flush messages
-    self:FlushAddonMessages(type, target);
-  else
-    -- Sync Version 2 and beyond
+  if version > 1 then
+    -- Sync Version 2 and beyond (older versions no longer supported)
     local messageData = {
       version = syncVersion, players = {}
     };
@@ -2707,29 +2481,8 @@ function LogTracker:SyncSendByNames(names, type, target, requireLogs, version)
     version = self:SyncVersionByType(type);
   end
   local amount = 0;
-  if version == 1 then
-    -- Sync Version 1
-    for _, name in ipairs(names) do
-      if requireLogs then
-        if self.syncStatus.requestsLockLogs[name] and self:QueuePlayerData(name, true) then
-          self.syncStatus.requestsLockLogs[name] = true;
-          amount = amount + 1;
-        end
-      else
-        if not self.syncStatus.requestsLock[name] and self:QueuePlayerData(name, false) then
-          self.syncStatus.requestsLock[name] = true;
-          amount = amount + 1;
-        end
-      end
-    end
-    if amount > 0 then
-      if type ~= "WHISPER" then
-        target = nil;
-      end
-      self:FlushAddonMessages(type, target);
-    end
-  else
-    -- Sync Version 2 and beyond
+  if version > 1 then
+    -- Sync Version 2 and beyond (older versions no longer supported)
     local messageData = {
       version = syncVersion, players = {}
     };
@@ -2756,21 +2509,78 @@ function LogTracker:SyncSendByNames(names, type, target, requireLogs, version)
   return amount;
 end
 
-function LogTracker:SyncSendRequestByNames(names_base, names_logs, type, target, version)
+function LogTracker:SyncAddRequestNames(names_base, names_logs, type, target)
+  for name, peerStatus in pairs(self.syncStatus.peers) do
+    if (type == "GUILD" and peerStatus.isGuild) or (type == "PARTY" and peerStatus.isParty)
+        or (type == "RAID" and peerStatus.isRaid) or (type == "WHISPER" and name == target)
+    then
+      if not peerStatus.requestNames then
+        peerStatus.requestNames = {};
+      end
+      -- Add requested names to the peer status
+      for _, name in ipairs(names_base) do
+        if not tContains(peerStatus.requestNames, name) then
+          tinsert(peerStatus.requestNames, name);
+        end
+      end
+      for _, name in ipairs(names_logs) do
+        if not tContains(peerStatus.requestNames, name) then
+          tinsert(peerStatus.requestNames, name);
+        end
+      end
+    end
+  end
+end
+
+function LogTracker:SyncPrepareRequestNames(names_base, names_logs, type, target)
+  local send_all = false;
+  local names_base_new = {};
+  local names_logs_new = {};
+  for name, peerStatus in pairs(self.syncStatus.peers) do
+    if (type == "GUILD" and peerStatus.isGuild) or (type == "PARTY" and peerStatus.isParty)
+        or (type == "RAID" and peerStatus.isRaid) or (type == "WHISPER" and name == target)
+    then
+      if not peerStatus.requestNames then
+        -- Did not request anything from that peer. Do the whole list
+        peerStatus.requestNames = {};
+        send_all = true;
+        names_base_new = names_base;
+        names_logs_new = names_logs;
+      else
+        if not send_all then
+          -- Add missing names to the new lists
+          for _, name in ipairs(names_base) do
+            if not tContains(peerStatus.requestNames, name) and not tContains(names_base_new, name) then
+              tinsert(names_base_new, name);
+            end
+          end
+          for _, name in ipairs(names_logs) do
+            if not tContains(peerStatus.requestNames, name) and not tContains(names_logs_new, name) then
+              tinsert(names_logs_new, name);
+            end
+          end
+        end
+      end
+    end
+  end
+  return names_base_new, names_logs_new;
+end
+
+function LogTracker:SyncSendRequestByNames(names_base, names_logs, type, target, version, allow_partial)
   -- Version
   if not version then
     version = self:SyncVersionByType(type);
   end
   if version < 3 then
-    -- Sync Version 1
-    if (#names_base > 0) then
-      self:SyncSendRequestV1ByNames(names_base, false, type, target, version);
-    end
-    if (#names_logs > 0) then
-      self:SyncSendRequestV1ByNames(names_logs, true, type, target, version);
-    end
-  else
-    -- Sync Version 3 and beyond
+    -- Old sync version no longer supported
+    return 0;
+  end
+  -- Sync Version 3 and beyond
+  local request_count = min(syncRequestFactor, #names_base + #names_logs);
+  names_base, names_logs = self:SyncPrepareRequestNames(names_base, names_logs, type, target);
+  local name_count = #names_base + #names_logs;
+  if name_count > 0 and (allow_partial or (name_count == request_count)) then
+    self:SyncAddRequestNames(names_base, names_logs, type, target);
     local messageData = {
       version = syncVersion, names_base = names_base, names_logs = names_logs
     };
@@ -2778,85 +2588,67 @@ function LogTracker:SyncSendRequestByNames(names_base, names_logs, type, target,
       target = nil;
     end
     self:SendCommMessage("rqC", messageData, type, target);
-  end
-end
-
-function LogTracker:SyncSendRequestV1ByNames(names, requireLogs, type, target, version)
-  -- Version
-  if not version then
-    version = self:SyncVersionByType(type);
-  end
-  if version == 1 then
-    -- Sync Version 1
-    local namesLimit = 251 - strlen(addonPrefix);
-    local namesList = "";
-    local i = 1;
-    local last = #(self.syncStatus.requests);
-    while (i <= last) and (strlen(self.syncStatus.requests[i]) < namesLimit) do
-      if namesList ~= "" then
-        namesList = namesList .. "#";
-      end
-      namesList = namesList .. self.syncStatus.requests[i];
-      namesLimit = 251 - strlen(addonPrefix) - strlen(namesList);
-      i = i + 1;
-    end
-    if type ~= "WHISPER" then
-      target = nil;
-    end
-    if requireLogs then
-      self:SendAddonMessage("rqL", namesList, type, target);
-    else
-      self:SendAddonMessage("rq", namesList, type, target);
-    end
+    return name_count;
   else
-    -- Sync Version 2 and beyond
-    local messageData = {
-      version = syncVersion, names = names
-    };
-    if type ~= "WHISPER" then
-      target = nil;
-    end
-    if requireLogs then
-      self:SendCommMessage("rqL", messageData, type, target);
-    else
-      self:SendCommMessage("rq", messageData, type, target);
-    end
+    return 0;
   end
 end
 
-function LogTracker:SyncSendRequest()
-  local requestCount = min(syncRequestLimit, #self.syncStatus.requests + #self.syncStatus.requestsLogs);
+function LogTracker:SyncSendRequest(allow_partial)
+  local requestCount = min(syncRequestFactor, #self.syncStatus.requests + #self.syncStatus.requestsLogs);
   if requestCount == 0 then
-    return;
+    return false;
   end
   local guild, party, raid, whisper = self:SyncUpdateFull();
-  if (guild + party + raid + whisper) > 0 then
-    self:LogDebug("Requesting Sync for ", requestCount, " players");
+  if (guild + party + raid + whisper) == 0 then
+    return false;
   end
+  local sent = 0;
   if guild > 0 then
-    self:SyncSendRequestByNames(self.syncStatus.requests, self.syncStatus.requestsLogs, "GUILD");
+    sent = self:SyncSendRequestByNames(self.syncStatus.requests, self.syncStatus.requestsLogs, "GUILD", nil, nil, allow_partial);
+    if sent > 0 then
+      self:LogDebug("Requested Sync for ", sent, "/", requestCount, " players (guild)");
+      return self:SyncUpdateRequestTimer(sent);
+    end
   end
   if party > 0 then
-    self:SyncSendRequestByNames(self.syncStatus.requests, self.syncStatus.requestsLogs, "PARTY");
+    sent = self:SyncSendRequestByNames(self.syncStatus.requests, self.syncStatus.requestsLogs, "PARTY", nil, nil, allow_partial);
+    if sent > 0 then
+      self:LogDebug("Requested Sync for ", sent, "/", requestCount, " players (party)");
+      return self:SyncUpdateRequestTimer(sent);
+    end
   end
   if raid > 0 then
-    self:SyncSendRequestByNames(self.syncStatus.requests, self.syncStatus.requestsLogs, "RAID");
+    sent = self:SyncSendRequestByNames(self.syncStatus.requests, self.syncStatus.requestsLogs, "RAID", nil, nil, allow_partial);
+    if sent > 0 then
+      self:LogDebug("Requested Sync for ", sent, "/", requestCount, " players (raid)");
+      return self:SyncUpdateRequestTimer(sent);
+    end
   end
   if whisper > 0 then
     for name, peer in pairs(self.syncStatus.peers) do
       if peer.isWhisper then
-        self:SyncSendRequestByNames(self.syncStatus.requests, self.syncStatus.requestsLogs, "WHISPER", name, peer.version);
+        sent = self:SyncSendRequestByNames(self.syncStatus.requests, self.syncStatus.requestsLogs, "WHISPER", name, peer.version, allow_partial);
+        if sent > 0 then
+          self:LogDebug("Requested Sync for ", sent, "/", requestCount, " players (whisper @ "..name..")");
+          return self:SyncUpdateRequestTimer(sent);
+        end
       end
     end
   end
+  if not allow_partial then
+    return self:SyncSendRequest(true);
+  end
   wipe(self.syncStatus.requests);
   wipe(self.syncStatus.requestsLogs);
-  if requestCount > 0 then
-    -- Clear request timer
-    local ratio = 1 - requestCount / syncRequestLimit;
-    self.syncStatus.requestsTimer = GetTime() + syncRequestDelay * ratio;
-    return true;
-  end
+  return false;
+end
+
+function LogTracker:SyncUpdateRequestTimer(requestCount)
+  -- Clear request timer
+  local ratio = 1 - requestCount / syncRequestFactor;
+  self.syncStatus.requestsTimer = GetTime() + syncRequestDelay * ratio;
+  return true;
 end
 
 function LogTracker:SyncSendHello(channel, target)
@@ -2888,8 +2680,8 @@ function LogTracker:SyncSendHelloFinal(channel, target, version)
     version = self:SyncVersionByType(channel);
   end
   if version == 1 then
-    -- Sync Version 1
-    self:SendAddonMessage("hi", nil, channel, target);
+    -- Sync Version 1 no longer supported
+    return;
   else
     -- Sync Version 2 and beyond
     local messageData = { version = syncVersion, versionAddon = GetAddOnMetadata("LogTracker", "version"), peers = {} };
