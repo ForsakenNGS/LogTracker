@@ -962,7 +962,7 @@ function LogTracker:OnCommMessageDecoded(message_type, message_data, distributio
           self.db.syncPeers[realmName] = {};
         end
         if not self.db.syncPeers[realmName][name] then
-          self.db.syncPeers[realmName][name] = { lastUpdate = time() };
+          self.db.syncPeers[realmName][name] = { lastUpdate = time() - syncPeerOnlineCheck };
         end
       end
     end
@@ -1790,7 +1790,7 @@ function LogTracker:GetPlayerData(playerFull, realmNameExplicit, classId, level,
 end
 
 function LogTracker:SyncRequeue(playerName, playerData)
-  if playerData and (playerData.lastUpdateLogs or 0) > 0 and playerData.updateFails < 2 then
+  if playerData and (playerData.lastUpdateLogs or 0) > 0 and (playerData.updateFails or 0) < 2 then
     playerData.lastUpdateLogs = 0;
     playerData.priority = 5;
     self:LogDebug("Queued rescan for player ", playerName)
@@ -2333,8 +2333,10 @@ function LogTracker:SyncCheck()
       -- Check whisper
       local whisperPeers, whisperOffset = self:SyncUpdateWhisper();
       if whisperPeers > 0 and whisperOffset < playerCount then
+        local whisperDelta = min(playerCount - whisperOffset, syncBatchPlayers);
         for name, peer in pairs(self.syncStatus.peers) do
-          if peer.isWhisper and peer.isOnline and peer.syncOffset == whisperOffset and peer.syncOffset < playerCount and peer.version >= 2 then
+          local peerDelta = min(playerCount - peer.syncOffset, syncBatchPlayers);
+          if peer.isWhisper and peer.isOnline and peerDelta == whisperDelta and peer.version >= 2 then
             peer.lastSeen = GetTime();
             local offset, sent = self:SyncSend("WHISPER", name, peer.syncOffset, syncBatchPlayers, peer.version);
             peer.syncOffset = offset;
@@ -2913,19 +2915,23 @@ function LogTracker:SyncUpdatePeers(type, target, sentCount, offset)
   end
 end
 
-function LogTracker:SyncPeersOnlineCheck()
+function LogTracker:SyncPeersOnlineCheck(force)
   local realmName = GetRealmName();
   if not self.db.syncPeers[realmName] then
     self.db.syncPeers[realmName] = {};
   end
   for name, peerStatus in pairs(self.db.syncPeers[realmName]) do
-    local peerAge = time() - peerStatus.lastUpdate;
-    if peerAge > syncPeerOnlineCheck then
-      self:GetSyncPeer(name);
-      self:SyncSendHello("WHISPER", name);
-      self:LogDebug("Checking if peer " .. name .. " is online...");
-      peerStatus.lastUpdate = time();
-      return true; -- Only check one peer at a time
+    if force then
+      peerStatus.lastUpdate = time() - syncPeerOnlineCheck;
+    else
+      local peerAge = time() - peerStatus.lastUpdate;
+      if peerAge > syncPeerOnlineCheck then
+        self:GetSyncPeer(name);
+        self:SyncSendHello("WHISPER", name);
+        self:LogDebug("Checking if peer " .. name .. " is online...");
+        peerStatus.lastUpdate = time();
+        return true; -- Only check one peer at a time
+      end
     end
   end
   return false;
